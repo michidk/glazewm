@@ -1,0 +1,23 @@
+packages/wm-platform/src/platform_impl/macos/border_overlay.rs
+  2d37806f9500fad9 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.12",
+  "base_commit_sha": "7739f801a6fa3085268a0706ad4bb690564c260f",
+  "prompts": {
+    "2d37806f9500fad9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-16e45a40-000f-4cdd-a1a7-db0423a2697d",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
