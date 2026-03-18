@@ -1,0 +1,23 @@
+packages/wm/src/commands/general/platform_sync.rs
+  dbc14fdae2997273 403
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "7f103d799e9a146c32a01544285abb209a1929ca",
+  "prompts": {
+    "dbc14fdae2997273": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-965e9464-7db5-4671-8d00-3d1e918964fb",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael@lohr.dev>",
+      "messages": [],
+      "total_additions": 635,
+      "total_deletions": 635,
+      "accepted_lines": 162,
+      "overriden_lines": 0
+    }
+  }
+}
