@@ -1,0 +1,52 @@
+packages/wm-platform/src/platform_impl/macos/native_window.rs
+  39228bd94475dbc5 163
+packages/wm/src/commands/general/platform_sync.rs
+  c7bf34a8b81b0dbf 391-392
+  47fc3825576ecb7c 393-407
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "9fc540867b3b173fd72662f3f5fa23bdaf60e826",
+  "prompts": {
+    "39228bd94475dbc5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-2ffb5953-0e06-4340-b1af-3b06590d939f",
+        "model": "unknown"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 476,
+      "total_deletions": 479,
+      "accepted_lines": 126,
+      "overriden_lines": 0
+    },
+    "47fc3825576ecb7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-6b31bf87-9f2f-4f62-b418-7fe40276acb8",
+        "model": "unknown"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 635,
+      "total_deletions": 628,
+      "accepted_lines": 162,
+      "overriden_lines": 0
+    },
+    "c7bf34a8b81b0dbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-f6e49a52-b298-4a03-b7d7-22f08354ef68",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 628,
+      "total_deletions": 619,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
