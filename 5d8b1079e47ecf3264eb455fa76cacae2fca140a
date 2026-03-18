@@ -1,0 +1,306 @@
+packages/wm/src/commands/general/platform_sync.rs
+  50a60a15cd8a7e21 705
+  520a1f0954da5812 2,4
+  80f536a361e2299e 597,601,604
+  b0b20186d62fecf7 282
+  8901373c8ac7d3a3 367,372-375,377-378,444-451
+  51f664719974c3b9 316-317,319-321
+packages/wm-platform/src/platform_impl/macos/ffi.rs
+  5426bae873ccdb85 4
+packages/wm-platform/src/platform_impl/macos/border_overlay.rs
+  1f66034c2be36b7f 34-36
+  c309378770610477 161,179-180,191,193-194
+  d707b068e299fbb2 276
+  2d37806f9500fad9 20
+  2fc1c641fd802874 251,257
+  a08396107b0ae122 352-353
+  9739665a1e0e5e0f 125
+  ca626cc58d2bd18b 22-30,32-33,37
+  833593e6c948cf42 19
+  cfb795bcece0bcd3 336-338,340-343
+  572eee4caa247bd6 6,8,18,21,31,38,49,52,58,64,71,77,89,94,100,106,116,119,124,133,141,156,164,178,183,187,196,205,209,213,220,225,231,235,241,246,254,267,271,275,287,292,299,303,308,316-326,328-335,345,349,356,365
+packages/wm-platform/src/platform_impl/macos/native_window.rs
+  22b31d73818a8d73 244,251
+packages/wm-platform/src/native_window.rs
+  ff093d9d1fa871c2 105-107,149-152,418-421,572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "5d8b1079e47ecf3264eb455fa76cacae2fca140a",
+  "prompts": {
+    "1f66034c2be36b7f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-26f20d1d-04d2-4794-a6a5-39934ab3cd47",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    },
+    "22b31d73818a8d73": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-70a0adf3-e8ce-4f9d-b102-afe183ac758d",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 507,
+      "total_deletions": 501,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "2d37806f9500fad9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-16e45a40-000f-4cdd-a1a7-db0423a2697d",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "2fc1c641fd802874": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-1fd4683f-2672-4da4-98ce-0c285fd8d132",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "50a60a15cd8a7e21": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-9852138d-42da-45ad-9b23-b016d97606a8",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "51f664719974c3b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-c1d01127-45e3-4c3c-ad4e-851eda280260",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 1,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    },
+    "520a1f0954da5812": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-f41798a7-639c-483d-8c36-c0c4efa2089a",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 3,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "5426bae873ccdb85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-ee7d2c0b-c8ae-4b0b-8366-1aae71f9567a",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "572eee4caa247bd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-86fec426-b698-42b8-9394-0e6f4933d66a",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 361,
+      "total_deletions": 382,
+      "accepted_lines": 68,
+      "overriden_lines": 0
+    },
+    "80f536a361e2299e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-7d31ac01-d345-406d-9468-6841a699c741",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 8,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    },
+    "833593e6c948cf42": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-cfe4e14c-25d4-4280-aba0-0be831413c07",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "8901373c8ac7d3a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-a26b4d45-8084-4d00-a706-5d122a6e0848",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 10,
+      "accepted_lines": 15,
+      "overriden_lines": 0
+    },
+    "9739665a1e0e5e0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-346e24ae-ea66-4629-bbc6-639442869c4a",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "a08396107b0ae122": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-f808ffa1-f81c-4eeb-ae11-3ee7ba9c0491",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 7,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "b0b20186d62fecf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-fcca4c7c-41a4-4d2a-be43-26ab7f21ebb1",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 7,
+      "total_deletions": 7,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "c309378770610477": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-fbffc115-5e58-4560-a622-d856a4e6be17",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 6,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    },
+    "ca626cc58d2bd18b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-1297e9cc-6634-4976-8ba8-5c6f7cf1e3cb",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 1,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    },
+    "cfb795bcece0bcd3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-09b028b4-d638-4322-8bd1-bd1159440dbe",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 7,
+      "total_deletions": 5,
+      "accepted_lines": 7,
+      "overriden_lines": 0
+    },
+    "d707b068e299fbb2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-c2e2e17a-7a61-42ae-8361-307461010ca3",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "f62358e78753fa3e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-b1b06f01-5f8a-427f-8d4a-42b0f9cfe07c",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 4,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "ff093d9d1fa871c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_304a04b15ffewVxDdCz9Vaa9cM-76f9b1e4-6ca3-42a2-88a8-8c38a01574a2",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 0,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    }
+  }
+}
