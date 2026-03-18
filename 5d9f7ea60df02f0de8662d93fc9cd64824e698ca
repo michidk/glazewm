@@ -1,0 +1,23 @@
+packages/wm/src/commands/general/platform_sync.rs
+  c7bf34a8b81b0dbf 391-400
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "5d9f7ea60df02f0de8662d93fc9cd64824e698ca",
+  "prompts": {
+    "c7bf34a8b81b0dbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-f6e49a52-b298-4a03-b7d7-22f08354ef68",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 628,
+      "total_deletions": 619,
+      "accepted_lines": 308,
+      "overriden_lines": 0
+    }
+  }
+}
