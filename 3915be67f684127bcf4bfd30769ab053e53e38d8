@@ -1,0 +1,23 @@
+packages/wm-platform/src/native_window.rs
+  a0dad884cf58c58e 555
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "3915be67f684127bcf4bfd30769ab053e53e38d8",
+  "prompts": {
+    "a0dad884cf58c58e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2ff832c45ffeHYO1Onlgj4YHNG-26b0d2b4-9a21-4dc5-9af8-b5fb573a2060",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael.lohr@spanflug.de>",
+      "messages": [],
+      "total_additions": 570,
+      "total_deletions": 570,
+      "accepted_lines": 278,
+      "overriden_lines": 0
+    }
+  }
+}
