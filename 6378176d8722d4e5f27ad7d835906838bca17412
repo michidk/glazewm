@@ -1,0 +1,36 @@
+packages/wm/src/commands/general/platform_sync.rs
+  948d5b86af479639 396-397,399-405
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "6378176d8722d4e5f27ad7d835906838bca17412",
+  "prompts": {
+    "6ae5e5ba213b6554": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-6463764b-88cd-4344-a064-de57fabbd673",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael@lohr.dev>",
+      "messages": [],
+      "total_additions": 475,
+      "total_deletions": 475,
+      "accepted_lines": 125,
+      "overriden_lines": 0
+    },
+    "948d5b86af479639": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "opencode-transcript-ses_2fefb2febffee0ovhe5oJlbo4u-1a186a99-e790-4162-9ea7-7ac02a63a4a9",
+        "model": "unknown"
+      },
+      "human_author": "Michael Lohr <michael@lohr.dev>",
+      "messages": [],
+      "total_additions": 635,
+      "total_deletions": 628,
+      "accepted_lines": 162,
+      "overriden_lines": 0
+    }
+  }
+}
