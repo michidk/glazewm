@@ -656,22 +656,89 @@ impl WmState {
       .cloned()
   }
 
-  /// Cleans up windows that are no longer alive.
+  /// Re-enumerates visible windows and manages any that aren't currently
+  /// tracked.
+  ///
+  /// This recovers windows that fell out of management due to stale
+  /// accessibility element references or missed events (e.g. after
+  /// sleep/wake or display changes).
+  pub fn re_enumerate_windows(&mut self, config: &mut UserConfig) {
+    match self.dispatcher.visible_windows() {
+      Ok(visible_windows) => {
+        for native_window in visible_windows.into_iter().rev() {
+          if self.window_from_native(&native_window).is_none() {
+            let nearest_workspace = self
+              .nearest_monitor(&native_window)
+              .and_then(|m| m.displayed_workspace());
+
+            if let Some(workspace) = nearest_workspace {
+              if let Err(err) = manage_window(
+                native_window,
+                Some(workspace.into()),
+                self,
+                config,
+              ) {
+                tracing::warn!(
+                  "Failed to manage window during re-enumeration: {:?}",
+                  err
+                );
+              }
+            }
+          }
+        }
+      }
+      Err(err) => {
+        tracing::warn!(
+          "Failed to re-enumerate visible windows: {:?}",
+          err
+        );
+      }
+    }
+  }
+
+  /// Cleans up windows that are no longer alive and attempts to
+  /// re-discover any that fell out of management.
   ///
   /// This addresses the "ghost window" issue where applications may
   /// terminate without sending window destroy events, leaving invalid
   /// windows in WM state.
   ///
+  /// When windows are removed, a re-enumeration is performed to recover
+  /// windows whose accessibility references became stale but still exist
+  /// (e.g. after sleep/wake). Without this, the periodic cleanup can
+  /// permanently lose all windows with no recovery path.
+  ///
   /// See: <https://github.com/glzr-io/glazewm/issues/1219>
-  pub fn cleanup_invalid_windows(&mut self) -> anyhow::Result<()> {
-    let invalid_windows = self
+  pub fn cleanup_invalid_windows(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    let invalid_windows: Vec<_> = self
       .windows()
       .into_iter()
-      .filter(|window| !window.native().is_valid());
+      .filter(|window| !window.native().is_valid())
+      .collect();
+
+    if invalid_windows.is_empty() {
+      return Ok(());
+    }
+
+    tracing::info!(
+      "Removing {} invalid window(s).",
+      invalid_windows.len()
+    );
 
     for window in invalid_windows {
       tracing::info!("Removing invalid window: {}", window);
       unmanage_window(window, self)?;
+    }
+
+    // Re-enumerate to recover windows whose AX references went stale
+    // but still exist on screen.
+    self.re_enumerate_windows(config);
+
+    if self.pending_sync.has_changes() {
+      platform_sync(self, config)?;
     }
 
     Ok(())
