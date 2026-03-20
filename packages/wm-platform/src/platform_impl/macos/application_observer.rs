@@ -296,6 +296,37 @@ impl ApplicationObserver {
             err
           );
         }
+
+        // Re-enumerate the application's windows after a short delay
+        // to catch replacements whose `AXWindowCreated` notification
+        // was missed (e.g. Spotify rapidly destroys and recreates its
+        // window on launch).
+        let app = context.application.clone();
+        let app_windows = context.app_windows.clone();
+        let events_tx = context.events_tx.clone();
+
+        std::thread::spawn(move || {
+          std::thread::sleep(std::time::Duration::from_millis(500));
+
+          let Ok(current_windows) = app.windows() else {
+            return;
+          };
+
+          let mut tracked = app_windows.lock().unwrap();
+
+          for new_window in current_windows {
+            if tracked.iter().any(|w| w.id() == new_window.id()) {
+              continue;
+            }
+
+            tracked.push(new_window.clone());
+
+            let _ = events_tx.send(WindowEvent::Shown {
+              window: new_window,
+              notification: crate::WindowEventNotification(None),
+            });
+          }
+        });
       }
 
       return;
