@@ -1,13 +1,9 @@
 use anyhow::Context;
-use wm_common::try_warn;
 
 use crate::{
-  commands::{
-    monitor::{
-      add_monitor, move_bounded_workspaces_to_new_monitor, remove_monitor,
-      sort_monitors, update_monitor,
-    },
-    window::manage_window,
+  commands::monitor::{
+    add_monitor, move_bounded_workspaces_to_new_monitor, remove_monitor,
+    sort_monitors, update_monitor,
   },
   models::{Monitor, NativeMonitorProperties},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -21,15 +17,75 @@ use crate::{
 /// Updates the monitor and workspace topology to match the new display
 /// layout, re-discovers any unmanaged windows, and redraws the full
 /// container tree.
+///
+/// Re-enumeration, DPI adjustment, and redraw always run even if
+/// the display topology update fails transiently (e.g. during
+/// sleep/wake).
 pub fn handle_display_settings_changed(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
   tracing::info!("Display settings changed.");
 
-  // Ignore the event if retrieval of the displays or their properties
-  // fails (can happen transiently during sleep/wake).
-  let displays = try_warn!(state
+  // Update the monitor/workspace topology. This may fail transiently
+  // during sleep/wake when displays aren't yet available.
+  if let Err(err) = update_display_topology(state, config) {
+    tracing::warn!("Failed to update display topology: {:?}", err);
+  }
+
+  // Re-enumerate visible windows and manage any that are not already
+  // tracked. This handles cases where windows fall out of the managed
+  // state during display changes (e.g. laptop lid close/reopen cycles).
+  state.re_enumerate_windows(config);
+
+  for window in state.windows() {
+    // Display setting changes can spread windows out sporadically, so
+    // mark all windows as needing a DPI adjustment (just in case).
+    window.set_has_pending_dpi_adjustment(true);
+
+    // Need to update floating position of moved windows when a monitor
+    // is disconnected or if the primary display is changed. The primary
+    // display dictates the position of 0,0.
+    let workspace = window.workspace().context("No workspace.")?;
+
+    let should_recenter = if window.has_custom_floating_placement() {
+      let workspace_rect = workspace.to_rect()?;
+
+      // Keep the placement if it still intersects the workspace, since
+      // `PlatformEvent::DisplaySettingsChanged` can be triggered by
+      // non-monitor changes (e.g. unplugging a USB device).
+      window
+        .floating_placement()
+        .intersection_area(&workspace_rect)
+        == 0
+    } else {
+      true
+    };
+
+    if should_recenter {
+      window.set_floating_placement(
+        window
+          .floating_placement()
+          .translate_to_center(&workspace.to_rect()?),
+      );
+    }
+  }
+
+  // Redraw full container tree.
+  state
+    .pending_sync
+    .queue_container_to_redraw(state.root_container.clone());
+
+  Ok(())
+}
+
+/// Updates the monitor and workspace topology to match the current
+/// display layout.
+fn update_display_topology(
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  let displays = state
     .dispatcher
     .sorted_displays()
     .map_err(anyhow::Error::from)
@@ -41,7 +97,7 @@ pub fn handle_display_settings_changed(
           Ok((display, properties))
         })
         .try_collect::<Vec<_>>()
-    }));
+    })?;
 
   let mut pending_monitors = state.monitors();
   let mut unmatched_displays = Vec::new();
@@ -89,76 +145,6 @@ pub fn handle_display_settings_changed(
   for new_monitor in new_monitors {
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;
   }
-
-  // Re-enumerate visible windows and manage any that are not already
-  // tracked. This handles cases where windows fall out of the managed
-  // state during display changes (e.g. laptop lid close/reopen cycles).
-  match state.dispatcher.visible_windows() {
-    Ok(visible_windows) => {
-      for native_window in visible_windows.into_iter().rev() {
-        if state.window_from_native(&native_window).is_none() {
-          let nearest_workspace = state
-            .nearest_monitor(&native_window)
-            .and_then(|m| m.displayed_workspace());
-
-          if let Some(workspace) = nearest_workspace {
-            if let Err(err) = manage_window(
-              native_window,
-              Some(workspace.into()),
-              state,
-              config,
-            ) {
-              tracing::warn!(
-                "Failed to manage window during re-sync: {:?}",
-                err
-              );
-            }
-          }
-        }
-      }
-    }
-    Err(err) => {
-      tracing::warn!("Failed to re-enumerate visible windows: {:?}", err);
-    }
-  }
-
-  for window in state.windows() {
-    // Display setting changes can spread windows out sporadically, so mark
-    // all windows as needing a DPI adjustment (just in case).
-    window.set_has_pending_dpi_adjustment(true);
-
-    // Need to update floating position of moved windows when a monitor is
-    // disconnected or if the primary display is changed. The primary
-    // display dictates the position of 0,0.
-    let workspace = window.workspace().context("No workspace.")?;
-
-    let should_recenter = if window.has_custom_floating_placement() {
-      let workspace_rect = workspace.to_rect()?;
-
-      // Keep the placement if it still intersects the workspace, since
-      // `PlatformEvent::DisplaySettingsChanged` can be triggered by
-      // non-monitor changes (e.g. unplugging a USB device).
-      window
-        .floating_placement()
-        .intersection_area(&workspace_rect)
-        == 0
-    } else {
-      true
-    };
-
-    if should_recenter {
-      window.set_floating_placement(
-        window
-          .floating_placement()
-          .translate_to_center(&workspace.to_rect()?),
-      );
-    }
-  }
-
-  // Redraw full container tree.
-  state
-    .pending_sync
-    .queue_container_to_redraw(state.root_container.clone());
 
   Ok(())
 }
