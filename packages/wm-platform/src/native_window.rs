@@ -110,6 +110,9 @@ pub trait NativeWindowExtMacOs {
 
   /// Re-queries the current `CGWindowID` from the `AXUIElement`.
   fn current_window_id(&self) -> crate::Result<WindowId>;
+
+  /// Exits native macOS fullscreen by setting `AXFullScreen` to `false`.
+  fn unmaximize(&self) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "macos")]
@@ -160,6 +163,10 @@ impl NativeWindowExtMacOs for NativeWindow {
 
   fn current_window_id(&self) -> crate::Result<WindowId> {
     self.inner.current_window_id()
+  }
+
+  fn unmaximize(&self) -> crate::Result<()> {
+    self.inner.unmaximize()
   }
 }
 

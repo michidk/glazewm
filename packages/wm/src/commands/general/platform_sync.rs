@@ -5,6 +5,8 @@ use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
   WindowState, WmEvent,
 };
+#[cfg(target_os = "macos")]
+use wm_platform::NativeWindowExtMacOs;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "macos")]
@@ -437,25 +439,54 @@ fn reposition_window(
   } else {
     #[cfg(target_os = "macos")]
     {
-      let first_result = window.native().set_frame(&rect);
+      // Exit native macOS fullscreen if the window is natively maximized
+      // but shouldn't be (e.g. transitioning to tiling/floating).
+      let should_unmaximize = match &window.state() {
+        WindowState::Fullscreen(fs) => {
+          !fs.maximized && window.native().is_maximized()?
+        }
+        _ => window.native().is_maximized()?,
+      };
 
-      // When there's a mismatch between the DPI of the monitor and the
-      // window, the first `set_frame` often fails or mis-sizes during
-      // cross-DPI transitions. Re-apply after a short delay to allow
-      // macOS to commit the screen association change.
-      if window.has_pending_dpi_adjustment() {
-        let native = window.native().clone();
-        let rect = rect.clone();
-
-        tokio::task::spawn(async move {
-          tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-          _ = native.set_frame(&rect);
-        });
-      } else {
-        first_result?;
+      if should_unmaximize {
+        if let Err(err) = window.native().unmaximize() {
+          tracing::warn!("Failed to exit native fullscreen: {}", err);
+        }
       }
 
-      macos_update_border_position(window.native().id(), &rect);
+      // Enter native macOS fullscreen if maximized fullscreen is
+      // requested. Skip `set_frame` since macOS manages the window
+      // geometry in native fullscreen.
+      if matches!(
+        &window.state(),
+        WindowState::Fullscreen(fs) if fs.maximized
+      ) {
+        if !window.native().is_maximized()? {
+          if let Err(err) = window.native().maximize() {
+            tracing::warn!("Failed to enter native fullscreen: {}", err);
+          }
+        }
+      } else {
+        let first_result = window.native().set_frame(&rect);
+
+        // When there's a mismatch between the DPI of the monitor and the
+        // window, the first `set_frame` often fails or mis-sizes during
+        // cross-DPI transitions. Re-apply after a short delay to allow
+        // macOS to commit the screen association change.
+        if window.has_pending_dpi_adjustment() {
+          let native = window.native().clone();
+          let rect = rect.clone();
+
+          tokio::task::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            _ = native.set_frame(&rect);
+          });
+        } else {
+          first_result?;
+        }
+
+        macos_update_border_position(window.native().id(), &rect);
+      }
     }
 
     #[cfg(target_os = "windows")]
