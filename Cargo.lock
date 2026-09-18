@@ -3364,6 +3364,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "shell-util",
+ "shlex",
  "tauri-winres",
  "tokio",
  "tokio-tungstenite",
