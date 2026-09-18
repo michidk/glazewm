@@ -9,6 +9,7 @@ use objc2_core_graphics::{
 };
 use tokio::sync::mpsc;
 
+use super::event_tap::EventTapHandle;
 use crate::{Dispatcher, Error, Key, KeyCode, ThreadBound};
 
 /// A key event received from the keyboard hook.
@@ -67,6 +68,7 @@ struct CallbackData {
   /// Channel signalled when macOS disables the event tap. Bounded to
   /// 1 so duplicate notifications are dropped via `try_send`.
   tap_disabled_tx: mpsc::Sender<()>,
+  event_tap: EventTapHandle,
 }
 
 /// A system-wide low-level keyboard hook.
@@ -96,6 +98,7 @@ impl KeyboardHook {
       let data = Box::new(CallbackData {
         callback: Box::new(callback),
         tap_disabled_tx,
+        event_tap: EventTapHandle::default(),
       });
       Box::into_raw(data) as usize
     };
@@ -158,6 +161,12 @@ impl KeyboardHook {
       })
     }?;
 
+    // Make the event tap available to its callback before registering the
+    // run loop source, which is when callbacks can start being delivered.
+    let callback_data =
+      unsafe { &mut *(callback_ptr as *mut CallbackData) };
+    callback_data.event_tap.set(&tap_port, dispatcher);
+
     let loop_source =
       CFMachPort::new_run_loop_source(None, Some(&tap_port), 0)
         .ok_or_else(|| {
@@ -194,11 +203,9 @@ impl KeyboardHook {
     // valid `CallbackData` allocated in `KeyboardHook::new`.
     let data = unsafe { &*(user_info as *const CallbackData) };
 
-    // macOS automatically disables event taps when the callback is
-    // unresponsive or the system is under load.
-    if event_type == CGEventType::TapDisabledByTimeout
-      || event_type == CGEventType::TapDisabledByUserInput
-    {
+    // Immediately re-enable a disabled event tap, then also request a
+    // full listener restart to replace a potentially unhealthy tap.
+    if data.event_tap.reenable_if_disabled(event_type) {
       let _ = data.tap_disabled_tx.try_send(());
       return unsafe { event.as_mut() };
     }
