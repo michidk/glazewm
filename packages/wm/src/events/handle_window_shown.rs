@@ -28,11 +28,12 @@ pub fn handle_window_shown(
     } else {
       state.pending_sync.queue_container_to_redraw(window);
     }
-  } else if let Some(old_tab) = find_background_tab(&native_window, state)
-  {
-    swap_tab_window(old_tab, native_window, state)?;
-  } else {
-    manage_window(native_window, None, state, config)?;
+  } else if !state.ignored_windows.contains(&native_window) {
+    if let Some(old_tab) = find_background_tab(&native_window, state) {
+      swap_tab_window(old_tab, native_window, state)?;
+    } else {
+      manage_window(native_window, None, state, config)?;
+    }
   }
 
   Ok(())
