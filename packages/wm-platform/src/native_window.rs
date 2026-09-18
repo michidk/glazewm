@@ -147,6 +147,13 @@ pub trait NativeWindowExtMacOs {
 
   /// Exits native macOS fullscreen by setting `AXFullScreen` to `false`.
   fn unmaximize(&self) -> crate::Result<()>;
+
+  /// Gets the Core Graphics window layer.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on macOS.
+  fn layer(&self) -> crate::Result<i32>;
 }
 
 #[cfg(target_os = "macos")]
@@ -201,6 +208,10 @@ impl NativeWindowExtMacOs for NativeWindow {
 
   fn unmaximize(&self) -> crate::Result<()> {
     self.inner.unmaximize()
+  }
+
+  fn layer(&self) -> crate::Result<i32> {
+    self.inner.layer()
   }
 }
 
