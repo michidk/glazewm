@@ -92,6 +92,10 @@ fn check_is_manageable(
   native_window: &NativeWindow,
 ) -> anyhow::Result<Option<NativeWindowProperties>> {
   if !native_window.is_visible()? {
+    tracing::debug!(
+      "Window {} not manageable: not visible.",
+      native_window.id().0,
+    );
     return Ok(None);
   }
 
@@ -99,10 +103,37 @@ fn check_is_manageable(
   {
     use wm_platform::NativeWindowExtMacOs;
 
-    let is_standard_window = native_window.role()? == "AXWindow"
-      && native_window.subrole()? == "AXStandardWindow";
+    let layer = native_window.layer()?;
+    if !is_normal_window_layer(layer) {
+      tracing::debug!(
+        "Window {} not manageable: Core Graphics layer {}.",
+        native_window.id().0,
+        layer,
+      );
+      return Ok(None);
+    }
+
+    let role = native_window.role()?;
+    let subrole = native_window.subrole()?;
+    let is_standard_window =
+      role == "AXWindow" && subrole == "AXStandardWindow";
 
     if !is_standard_window {
+      tracing::debug!(
+        "Window {} not manageable: role={}, subrole={}.",
+        native_window.id().0,
+        role,
+        subrole,
+      );
+      return Ok(None);
+    }
+
+    // Skip background tabs in native macOS tab groups.
+    if !native_window.is_root_window().unwrap_or(true) {
+      tracing::debug!(
+        "Window {} not manageable: background tab.",
+        native_window.id().0,
+      );
       return Ok(None);
     }
   }
@@ -150,6 +181,23 @@ fn check_is_manageable(
   Ok(Some(native_properties))
 }
 
+#[cfg(target_os = "macos")]
+fn is_normal_window_layer(layer: i32) -> bool {
+  layer == 0
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn only_normal_window_layer_is_manageable() {
+    assert!(is_normal_window_layer(0));
+    assert!(!is_normal_window_layer(3));
+    assert!(!is_normal_window_layer(1000));
+  }
+}
+
 fn create_window(
   native_window: NativeWindow,
   native_properties: NativeWindowProperties,
@@ -165,7 +213,10 @@ fn create_window(
     .displayed_workspace()
     .context("No nearest workspace.")?;
 
-  let gaps_config = config.value.gaps.clone();
+  let gaps_config = config.value.gaps.for_monitor(
+    nearest_monitor.index(),
+    &nearest_monitor.native_properties().device_name,
+  );
   let window_state =
     window_state_to_create(&native_properties, &nearest_monitor, config)?;
 

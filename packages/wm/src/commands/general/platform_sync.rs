@@ -1,12 +1,16 @@
 use anyhow::Context;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use wm_common::WindowEffectConfig;
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
   WindowState, WmEvent,
 };
+#[cfg(target_os = "macos")]
+use wm_platform::NativeWindowExtMacOs;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
+#[cfg(target_os = "macos")]
+use wm_platform::{macos_remove_border, macos_update_border_position};
 #[cfg(target_os = "windows")]
 use wm_platform::{CornerStyle, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
@@ -207,6 +211,11 @@ fn redraw_containers(
   // Get monitors by their optimal hide corner.
   let monitors_by_hide_corner = state.monitors_by_hide_corner();
 
+  #[cfg(target_os = "macos")]
+  let mut has_hiding_transition = false;
+  #[cfg(target_os = "macos")]
+  let mut has_showing_transition = false;
+
   for window in windows_to_update.iter().rev() {
     let should_bring_to_front = windows_to_bring_to_front.contains(window);
 
@@ -268,6 +277,9 @@ fn redraw_containers(
 
     // Transition display state depending on whether window will be
     // shown or hidden.
+    #[cfg(target_os = "macos")]
+    let prev_display_state = window.display_state();
+
     window.set_display_state(
       match (window.display_state(), workspace.is_displayed()) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
@@ -280,6 +292,14 @@ fn redraw_containers(
       },
     );
 
+    #[cfg(target_os = "macos")]
+    if prev_display_state != window.display_state() {
+      has_hiding_transition |=
+        matches!(window.display_state(), DisplayState::Hiding);
+      has_showing_transition |=
+        matches!(window.display_state(), DisplayState::Showing);
+    }
+
     let is_visible = matches!(
       window.display_state(),
       DisplayState::Showing | DisplayState::Shown
@@ -289,6 +309,13 @@ fn redraw_containers(
       reposition_window(window, *hide_corner, &z_order, is_visible, config)
     {
       tracing::warn!("Failed to set window position: {}", err);
+    }
+
+    // Destroy overlay for windows transitioning to hidden. Overlays
+    // for visible windows are (re)created by `apply_window_effects`.
+    #[cfg(target_os = "macos")]
+    if !is_visible {
+      macos_remove_border(window.native().id());
     }
 
     // Whether the window is either transitioning to or from fullscreen.
@@ -332,9 +359,28 @@ fn redraw_containers(
     }
   }
 
+  #[cfg(target_os = "macos")]
+  if has_hiding_transition || has_showing_transition {
+    for managed_window in state.windows() {
+      let window_visible = matches!(
+        managed_window.display_state(),
+        DisplayState::Showing | DisplayState::Shown
+      );
+
+      if !window_visible {
+        macos_remove_border(managed_window.native().id());
+      }
+    }
+
+    if has_showing_transition {
+      state.pending_sync.queue_all_effects_update();
+    }
+  }
+
   Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn reposition_window(
   window: &WindowContainer,
   hide_corner: HideCorner,
@@ -374,21 +420,75 @@ fn reposition_window(
     // Even though the window size is unchanged, `NativeWindow::set_frame`
     // is used instead of `NativeWindow::reposition` because the latter
     // resulted in occasional incorrect positionings on macOS.
-    window.native().set_frame(&Rect::from_xy(
-      position_x,
-      position_y,
-      frame.width(),
-      frame.height(),
-    ))?;
+    let hidden_rect =
+      Rect::from_xy(position_x, position_y, frame.width(), frame.height());
+
+    window.native().set_frame(&hidden_rect)?;
+
+    #[cfg(target_os = "macos")]
+    macos_update_border_position(window.native().id(), &hidden_rect);
 
     return Ok(());
   }
 
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
+
+    #[cfg(target_os = "macos")]
+    macos_update_border_position(window.native().id(), &rect);
   } else {
     #[cfg(target_os = "macos")]
-    window.native().set_frame(&rect)?;
+    {
+      // Exit native macOS fullscreen if the window is natively maximized
+      // but shouldn't be (e.g. transitioning to tiling/floating).
+      let should_unmaximize = match &window.state() {
+        WindowState::Fullscreen(fs) => {
+          !fs.maximized && window.native().is_maximized()?
+        }
+        _ => window.native().is_maximized()?,
+      };
+
+      if should_unmaximize {
+        if let Err(err) = window.native().unmaximize() {
+          tracing::warn!("Failed to exit native fullscreen: {}", err);
+        }
+      }
+
+      // Enter native macOS fullscreen if maximized fullscreen is
+      // requested. Skip `set_frame` since macOS manages the window
+      // geometry in native fullscreen.
+      if matches!(
+        &window.state(),
+        WindowState::Fullscreen(fs) if fs.maximized
+      ) {
+        if !window.native().is_maximized()? {
+          if let Err(err) = window.native().maximize() {
+            tracing::warn!("Failed to enter native fullscreen: {}", err);
+          }
+        }
+      } else {
+        let first_result = window.native().set_frame(&rect);
+
+        // When there's a mismatch between the DPI of the monitor and the
+        // window, the first `set_frame` often fails or mis-sizes during
+        // cross-DPI transitions. Re-apply after a short delay to allow
+        // macOS to commit the screen association change.
+        if window.has_pending_dpi_adjustment() {
+          let native = window.native().clone();
+          let rect = rect.clone();
+
+          tokio::task::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100))
+              .await;
+            _ = native.set_frame(&rect);
+          });
+        } else {
+          first_result?;
+        }
+
+        macos_update_border_position(window.native().id(), &rect);
+      }
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -445,13 +545,17 @@ fn reposition_window(
         _ => {
           swp_flags |= SWP_FRAMECHANGED;
 
+          // Capture whether a scale correction is needed *before* the
+          // move, while the window's DPI context still reflects its old
+          // monitor.
+          let needs_dpi_correction = needs_dpi_scale_correction(window);
+
           window.native().set_window_pos(z_order, &rect, swp_flags)?;
 
-          // When there's a mismatch between the DPI of the monitor and the
-          // window, the window might be sized incorrectly after the first
-          // move. If we set the position twice, inconsistencies after the
-          // first move are resolved.
-          if window.has_pending_dpi_adjustment() {
+          // A second `SetWindowPos`, issued after Windows has updated the
+          // window's DPI in response to the first, re-sizes it under the
+          // now-correct scale.
+          if needs_dpi_correction {
             window.native().set_window_pos(z_order, &rect, swp_flags)?;
           }
         }
@@ -469,6 +573,32 @@ fn reposition_window(
   }
 
   Ok(())
+}
+
+/// Whether a window needs a corrective second `SetWindowPos` to be sized
+/// at the right scale for the monitor it's being placed on.
+///
+/// A window whose DPI-awareness context still reflects a monitor other
+/// than its target is sized under the wrong scale by the first
+/// `SetWindowPos` (e.g. leaking onto the neighbouring monitor); a second
+/// call, once Windows has updated the window's DPI in response to the
+/// first, corrects it.
+///
+/// The mismatch is detected live by comparing the window's current DPI
+/// against its target monitor, so freshly-opened windows are caught too:
+/// the OS may spawn a window straight onto its target monitor, where the
+/// `has_pending_dpi_adjustment` hint (set only on a cross-monitor spawn)
+/// misses that the window's initial context carries the wrong DPI. That
+/// hint is still honoured as a fallback. A window already at the correct
+/// scale needs no second call.
+#[cfg(target_os = "windows")]
+fn needs_dpi_scale_correction(window: &WindowContainer) -> bool {
+  let window_dpi = window.native().dpi().ok();
+  let monitor_dpi = window.monitor().map(|m| m.native_properties().dpi);
+  let has_dpi_mismatch =
+    matches!((window_dpi, monitor_dpi), (Some(w), Some(m)) if w != m);
+
+  has_dpi_mismatch || window.has_pending_dpi_adjustment()
 }
 
 fn jump_cursor(
@@ -509,16 +639,22 @@ fn jump_cursor(
 }
 
 fn apply_window_effects(
-  // LINT: `window` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  // LINT: `window` is only used on Windows and macOS.
+  #[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(unused_variables)
+  )]
   window: &WindowContainer,
   is_focused: bool,
   config: &UserConfig,
 ) {
   let window_effects = &config.value.window_effects;
 
-  // LINT: `effect_config` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  // LINT: `effect_config` is only used on Windows and macOS.
+  #[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(unused_variables)
+  )]
   let effect_config = if is_focused {
     &window_effects.focused_window
   } else {
@@ -526,7 +662,7 @@ fn apply_window_effects(
   };
 
   // Skip if both focused + non-focused window effects are disabled.
-  #[cfg(target_os = "windows")]
+  #[cfg(any(target_os = "windows", target_os = "macos"))]
   if window_effects.focused_window.border.enabled
     || window_effects.other_windows.border.enabled
   {
@@ -616,4 +752,26 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+/// Applies a border color effect to a window on macOS.
+#[cfg(target_os = "macos")]
+fn apply_border_effect(
+  window: &WindowContainer,
+  effect_config: &WindowEffectConfig,
+) {
+  let is_visible = matches!(
+    window.display_state(),
+    DisplayState::Showing | DisplayState::Shown
+  ) && !matches!(window.state(), WindowState::Minimized);
+
+  let border_color = if effect_config.border.enabled && is_visible {
+    Some(&effect_config.border.color)
+  } else {
+    None
+  };
+
+  if let Err(err) = window.native().set_border_color(border_color) {
+    tracing::warn!("Failed to set window border color: {}", err);
+  }
 }

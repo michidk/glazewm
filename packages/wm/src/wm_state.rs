@@ -75,6 +75,9 @@ pub struct WmState {
 
   /// Sender for gracefully shutting down the WM.
   exit_tx: mpsc::UnboundedSender<()>,
+
+  /// Sender for requesting a keybinding listener restart.
+  restart_keybinding_tx: mpsc::UnboundedSender<()>,
 }
 
 impl WmState {
@@ -82,6 +85,7 @@ impl WmState {
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
+    restart_keybinding_tx: mpsc::UnboundedSender<()>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
@@ -97,6 +101,7 @@ impl WmState {
       has_initialized: false,
       event_tx,
       exit_tx,
+      restart_keybinding_tx,
     }
   }
 
@@ -571,6 +576,12 @@ impl WmState {
     Ok(())
   }
 
+  /// Signals the main loop to restart the keybinding listener.
+  pub fn emit_restart_keybinding(&self) -> anyhow::Result<()> {
+    self.restart_keybinding_tx.send(())?;
+    Ok(())
+  }
+
   pub fn container_by_id(&self, id: Uuid) -> Option<Container> {
     self
       .root_container
@@ -673,6 +684,9 @@ impl WmState {
       tracing::info!("Removing invalid window: {}", window);
       unmanage_window(window, self)?;
     }
+
+    // Prune ignored windows that are no longer valid.
+    self.ignored_windows.retain(NativeWindow::is_valid);
 
     Ok(())
   }

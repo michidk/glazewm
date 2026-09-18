@@ -1,5 +1,5 @@
 #[cfg(target_os = "macos")]
-use objc2_application_services::AXUIElement;
+use objc2_application_services::{AXError, AXUIElement};
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::{CFBoolean, CFRetained, CFString};
 #[cfg(target_os = "windows")]
@@ -10,11 +10,11 @@ use windows::Win32::{
   },
 };
 
-use crate::{platform_impl, Rect};
+use crate::{platform_impl, Color, Rect};
 #[cfg(target_os = "macos")]
 use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
-use crate::{Color, CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
 
 /// Unique identifier of a window.
 ///
@@ -32,17 +32,51 @@ pub struct WindowId(
 
 impl WindowId {
   #[cfg(target_os = "macos")]
-  pub(crate) fn from_window_element(el: &CFRetained<AXUIElement>) -> Self {
+  pub(crate) fn from_window_element(
+    el: &CFRetained<AXUIElement>,
+  ) -> crate::Result<Self> {
     let mut window_id = 0;
 
-    unsafe {
+    let result = unsafe {
       platform_impl::ffi::_AXUIElementGetWindow(
         CFRetained::as_ptr(el),
         &raw mut window_id,
       )
     };
 
-    Self(window_id)
+    Self::from_ax_result(result, window_id)
+  }
+
+  #[cfg(target_os = "macos")]
+  fn from_ax_result(
+    result: AXError,
+    window_id: u32,
+  ) -> crate::Result<Self> {
+    if result != AXError::Success {
+      return Err(crate::Error::Accessibility(
+        "_AXUIElementGetWindow".to_string(),
+        result.0,
+      ));
+    }
+
+    Ok(Self(window_id))
+  }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn window_id_lookup_error_is_propagated() {
+    let result = WindowId::from_ax_result(AXError::InvalidUIElement, 42);
+
+    assert!(matches!(
+      result,
+      Err(crate::Error::Accessibility(attribute, code))
+        if attribute == "_AXUIElementGetWindow"
+          && code == AXError::InvalidUIElement.0
+    ));
   }
 }
 
@@ -98,6 +132,28 @@ pub trait NativeWindowExtMacOs {
   ///
   /// This method is only available on macOS.
   fn is_main(&self) -> crate::Result<bool>;
+
+  /// Whether this window is a root window (not a background tab).
+  ///
+  /// Background tabs in native macOS tab groups have an `AXWindow`
+  /// parent instead of an `AXApplication` parent.
+  fn is_root_window(&self) -> crate::Result<bool>;
+
+  /// Gets the process ID of the owning application.
+  fn process_id(&self) -> i32;
+
+  /// Re-queries the current `CGWindowID` from the `AXUIElement`.
+  fn current_window_id(&self) -> crate::Result<WindowId>;
+
+  /// Exits native macOS fullscreen by setting `AXFullScreen` to `false`.
+  fn unmaximize(&self) -> crate::Result<()>;
+
+  /// Gets the Core Graphics window layer.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on macOS.
+  fn layer(&self) -> crate::Result<i32>;
 }
 
 #[cfg(target_os = "macos")]
@@ -136,6 +192,26 @@ impl NativeWindowExtMacOs for NativeWindow {
       el.get_attribute::<CFBoolean>("AXMain")
         .map(|cf_bool| cf_bool.value())
     })?
+  }
+
+  fn is_root_window(&self) -> crate::Result<bool> {
+    self.inner.is_root_window()
+  }
+
+  fn process_id(&self) -> i32 {
+    self.inner.process_id()
+  }
+
+  fn current_window_id(&self) -> crate::Result<WindowId> {
+    self.inner.current_window_id()
+  }
+
+  fn unmaximize(&self) -> crate::Result<()> {
+    self.inner.unmaximize()
+  }
+
+  fn layer(&self) -> crate::Result<i32> {
+    self.inner.layer()
   }
 }
 
@@ -198,6 +274,17 @@ pub trait NativeWindowWindowsExt {
   ///
   /// This method is only available on Windows.
   fn has_window_style_ex(&self, style: WINDOW_EX_STYLE) -> bool;
+
+  /// DPI of the window's current per-monitor DPI-awareness context.
+  ///
+  /// This lags a cross-monitor move until Windows delivers
+  /// `WM_DPICHANGED`, so comparing it against the target monitor's DPI
+  /// reveals whether the window still needs a scale correction.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn dpi(&self) -> crate::Result<u32>;
 
   /// Thin wrapper around [`SetWindowPos`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
   ///
@@ -287,13 +374,6 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()>;
 
-  /// Sets the color of the window's border.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()>;
-
   /// Sets the corner style of the window.
   ///
   /// # Platform-specific
@@ -359,6 +439,10 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.has_window_style_ex(style)
   }
 
+  fn dpi(&self) -> crate::Result<u32> {
+    self.inner.dpi()
+  }
+
   fn set_window_pos(
     &self,
     z_order: &WindowZOrder,
@@ -402,10 +486,6 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {
     self.inner.set_title_bar_visibility(visible)
-  }
-
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()> {
-    self.inner.set_border_color(color)
   }
 
   fn set_corner_style(
@@ -556,6 +636,19 @@ impl NativeWindow {
   ///   title bar.
   pub fn close(&self) -> crate::Result<()> {
     self.inner.close()
+  }
+
+  /// Sets the color of the window's border, or removes it if `None`.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Uses `DwmSetWindowAttribute(DWMWA_BORDER_COLOR)`.
+  /// - **macOS**: Creates/removes a `SkyLight` overlay window.
+  pub fn set_border_color(
+    &self,
+    color: Option<&Color>,
+  ) -> crate::Result<()> {
+    self.inner.set_border_color(color)
   }
 }
 

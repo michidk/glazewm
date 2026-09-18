@@ -7,7 +7,9 @@ use objc2_core_graphics::{
   CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventTapLocation,
   CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
 };
+use tokio::sync::mpsc;
 
+use super::event_tap::EventTapHandle;
 use crate::{Dispatcher, Error, Key, KeyCode, ThreadBound};
 
 /// A key event received from the keyboard hook.
@@ -62,6 +64,11 @@ impl KeyEvent {
 /// Data shared with the `CGEventTap` callback.
 struct CallbackData {
   callback: Box<dyn Fn(KeyEvent) -> bool + Send + Sync + 'static>,
+
+  /// Channel signalled when macOS disables the event tap. Bounded to
+  /// 1 so duplicate notifications are dropped via `try_send`.
+  tap_disabled_tx: mpsc::Sender<()>,
+  event_tap: EventTapHandle,
 }
 
 /// A system-wide low-level keyboard hook.
@@ -81,6 +88,7 @@ impl KeyboardHook {
   /// the event should be intercepted.
   pub fn new<F>(
     callback: F,
+    tap_disabled_tx: mpsc::Sender<()>,
     dispatcher: &Dispatcher,
   ) -> crate::Result<Self>
   where
@@ -89,6 +97,8 @@ impl KeyboardHook {
     let callback_ptr = {
       let data = Box::new(CallbackData {
         callback: Box::new(callback),
+        tap_disabled_tx,
+        event_tap: EventTapHandle::default(),
       });
       Box::into_raw(data) as usize
     };
@@ -151,6 +161,12 @@ impl KeyboardHook {
       })
     }?;
 
+    // Make the event tap available to its callback before registering the
+    // run loop source, which is when callbacks can start being delivered.
+    let callback_data =
+      unsafe { &mut *(callback_ptr as *mut CallbackData) };
+    callback_data.event_tap.set(&tap_port, dispatcher);
+
     let loop_source =
       CFMachPort::new_run_loop_source(None, Some(&tap_port), 0)
         .ok_or_else(|| {
@@ -183,6 +199,17 @@ impl KeyboardHook {
       return unsafe { event.as_mut() };
     }
 
+    // SAFETY: `user_info` is verified non-null above and points to a
+    // valid `CallbackData` allocated in `KeyboardHook::new`.
+    let data = unsafe { &*(user_info as *const CallbackData) };
+
+    // Immediately re-enable a disabled event tap, then also request a
+    // full listener restart to replace a potentially unhealthy tap.
+    if data.event_tap.reenable_if_disabled(event_type) {
+      let _ = data.tap_disabled_tx.try_send(());
+      return unsafe { event.as_mut() };
+    }
+
     // Extract the key code of the pressed/released key.
     let key_code = KeyCode(unsafe {
       CGEvent::integer_value_field(
@@ -204,8 +231,6 @@ impl KeyboardHook {
       event_flags,
     };
 
-    // Get callback from user data and invoke it.
-    let data = unsafe { &*(user_info as *const CallbackData) };
     let should_intercept = (data.callback)(key_event);
 
     if should_intercept {

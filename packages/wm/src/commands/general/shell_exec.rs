@@ -9,6 +9,13 @@ use wm_platform::DispatcherExtWindows;
 
 use crate::wm_state::WmState;
 
+/// Splits a shell argument string respecting single and double quotes.
+/// Returns `None` if the string contains unmatched quotes.
+#[cfg(target_os = "macos")]
+fn split_shell_args(args: &str) -> Option<Vec<String>> {
+  shlex::split(args)
+}
+
 pub fn shell_exec(
   command: &str,
   // LINT: `hide_window` is only used on Windows.
@@ -30,11 +37,10 @@ pub fn shell_exec(
   let result = {
     #[cfg(target_os = "macos")]
     {
-      Shell::spawn(
-        &program,
-        args.split_whitespace(),
-        &CommandOptions::default(),
-      )
+      let parsed_args = split_shell_args(&args).unwrap_or_else(|| {
+        args.split_whitespace().map(String::from).collect()
+      });
+      Shell::spawn(&program, parsed_args, &CommandOptions::default())
     }
     #[cfg(target_os = "windows")]
     {
@@ -78,7 +84,7 @@ pub fn shell_exec(
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// let (prog, args) = parse_command("code .")?;
 /// assert_eq!(prog, "code");
 /// assert_eq!(args, ".");

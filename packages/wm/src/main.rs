@@ -45,6 +45,9 @@ mod user_config;
 mod wm;
 mod wm_state;
 
+#[cfg(test)]
+mod test_utils;
+
 /// Main entry point for the application.
 ///
 /// Conditionally starts the WM or runs a CLI command based on the given
@@ -158,13 +161,14 @@ async fn start_wm(
     },
     dispatcher,
   )?;
-  let mut keybinding_listener = KeybindingListener::new(
-    &config
-      .active_keybinding_configs(&[], false)
-      .flat_map(|kb| kb.bindings)
-      .collect::<Vec<_>>(),
-    dispatcher,
-  )?;
+  let (mut keybinding_listener, mut tap_disabled_rx) =
+    KeybindingListener::new(
+      &config
+        .active_keybinding_configs(&[], false)
+        .flat_map(|kb| kb.bindings)
+        .collect::<Vec<_>>(),
+      dispatcher,
+    )?;
 
   // Run user's startup commands.
   if let Err(err) = wm.process_commands(
@@ -178,6 +182,24 @@ async fn start_wm(
 
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
+  cleanup_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+  // Debounce `DisplaySettingsChanged` to delay processing until 1 second
+  // after the last received event. On wake from sleep, Windows pages in
+  // suspended processes, causing a transient system-wide commit charge
+  // spike. Processing the event immediately risks an OOM abort in the
+  // allocations inside `handle_display_settings_changed` (building monitor
+  // structs, `Vec`s, etc.). The 1-second delay lets the commit charge
+  // stabilize. As a bonus, multiple events fired in rapid succession
+  // during a wake cycle are collapsed into a single handler invocation.
+  //
+  // The sentinel value (24 hours) is used to keep the future armed but
+  // effectively never-firing when no event is pending. The `if` guard
+  // prevents it from being selected until `pending_display_change` is set.
+  let display_debounce = tokio::time::sleep(Duration::from_hours(24));
+  tokio::pin!(display_debounce);
+  let mut pending_display_change = false;
 
   loop {
     let res = tokio::select! {
@@ -202,15 +224,52 @@ async fn start_wm(
         wm.process_event(PlatformEvent::Window(event), &mut config)
       },
       Some(()) = display_listener.next_event() => {
-        tracing::debug!("Received display settings changed event.");
-        wm.process_event(PlatformEvent::DisplaySettingsChanged, &mut config)
+        tracing::debug!("Received display settings changed event; debouncing.");
+        pending_display_change = true;
+        display_debounce
+          .as_mut()
+          .reset(tokio::time::Instant::now() + Duration::from_secs(1));
+        Ok(())
+      },
+      () = &mut display_debounce, if pending_display_change => {
+        // Re-arm for another second if the system is still under commit
+        // pressure — processing now would risk an OOM abort. This breaks
+        // the crash-restart loop that occurs when the watcher relaunches
+        // glazewm into the same high-pressure window.
+        if dispatcher.is_under_commit_pressure() {
+          tracing::debug!(
+            "Display settings changed deferred: system under commit pressure."
+          );
+          display_debounce
+            .as_mut()
+            .reset(tokio::time::Instant::now() + Duration::from_secs(1));
+          Ok(())
+        } else {
+          tracing::debug!("Processing debounced display settings changed.");
+          pending_display_change = false;
+          display_debounce
+            .as_mut()
+            .reset(tokio::time::Instant::now() + Duration::from_hours(24));
+          wm.process_event(
+            PlatformEvent::DisplaySettingsChanged,
+            &mut config,
+          )
+        }
       },
       Some(event) = keybinding_listener.next_event() => {
         tracing::debug!("Received keyboard event: {:?}", event);
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
       }
       _ = cleanup_interval.tick() => {
-        if wm.state.is_paused {
+        // Skip cleanup when the system is under virtual-memory commit
+        // pressure (e.g. immediately after wake from sleep or during
+        // system startup). The allocations inside `cleanup_invalid_windows`
+        // can trigger an OOM abort at exactly these moments. The work is
+        // deferred, not dropped — the next tick (5 seconds later) retries
+        // once pressure subsides.
+        if wm.state.is_paused
+          || dispatcher.is_under_commit_pressure()
+        {
           Ok(())
         } else {
           wm.state.cleanup_invalid_windows()
@@ -266,10 +325,28 @@ async fn start_wm(
           )?;
         }
 
+        // Restart the keyboard hook on config reload to recover from
+        // a potentially dead CGEventTap.
+        if matches!(wm_event, WmEvent::UserConfigChanged { .. }) {
+          keybinding_listener.restart(dispatcher)?;
+        }
+
         if let Err(err) = ipc_server.process_event(wm_event) {
           tracing::error!("{:?}", err);
         }
 
+        Ok(())
+      },
+      Some(()) = wm.restart_keybinding_rx.recv() => {
+        tracing::warn!("Restarting keybinding listener.");
+        keybinding_listener.restart(dispatcher)?;
+        Ok(())
+      },
+      Some(()) = tap_disabled_rx.recv() => {
+        tracing::warn!(
+          "Keyboard event tap was disabled by macOS, restarting."
+        );
+        keybinding_listener.restart(dispatcher)?;
         Ok(())
       },
       Some(()) = tray.config_reload_rx.recv() => {

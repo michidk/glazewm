@@ -13,8 +13,9 @@ use objc2_core_graphics::{CGDisplayIsAsleep, CGError};
 use crate::{
   platform_impl::{
     self, ffi, AXUIElement, AXUIElementExt, AXValueExt, Application,
+    BORDER_OVERLAY_MANAGER,
   },
-  Dispatcher, Point, Rect, ThreadBound, WindowId,
+  Color, Dispatcher, Point, Rect, ThreadBound, WindowId,
 };
 
 /// Platform-specific implementation of [`NativeWindow`].
@@ -96,6 +97,26 @@ impl NativeWindow {
     })?
   }
 
+  /// Gets the Core Graphics window layer.
+  pub(crate) fn layer(&self) -> crate::Result<i32> {
+    let mut layer = 0;
+    let result = unsafe {
+      ffi::SLSGetWindowLevel(
+        ffi::SLSMainConnectionID(),
+        self.id.0,
+        &raw mut layer,
+      )
+    };
+
+    if result != CGError::Success {
+      return Err(crate::Error::Platform(
+        "Failed to get Core Graphics window layer.".to_string(),
+      ));
+    }
+
+    Ok(layer)
+  }
+
   /// Implements [`NativeWindow::is_valid`].
   pub(crate) fn is_valid(&self) -> bool {
     // Query `AXRole`, which is present on all valid `AXUIElement`s.
@@ -167,6 +188,35 @@ impl NativeWindow {
     )
   }
 
+  /// Whether this window is a root window (not a background tab).
+  ///
+  /// Native macOS tabs share the same physical window frame, but each
+  /// tab is a separate `AXUIElement`. A background tab's `AXParent`
+  /// points to another `AXWindow` (the active tab), whereas a root
+  /// window's `AXParent` points to the `AXApplication`.
+  pub(crate) fn is_root_window(&self) -> crate::Result<bool> {
+    self.element.with(|el| {
+      let parent = el.get_attribute::<AXUIElement>("AXParent")?;
+      let parent_role = parent.get_attribute::<CFString>("AXRole")?;
+
+      Ok(parent_role.to_string() != "AXWindow")
+    })?
+  }
+
+  /// Gets the process ID of the application that owns this window.
+  pub(crate) fn process_id(&self) -> platform_impl::ProcessId {
+    self.application.pid
+  }
+
+  /// Re-queries the current `CGWindowID` from the underlying
+  /// `AXUIElement`.
+  ///
+  /// For native macOS tab groups, the `CGWindowID` changes on tab
+  /// switch even though the `AXUIElement` stays the same.
+  pub(crate) fn current_window_id(&self) -> crate::Result<WindowId> {
+    self.element.with(WindowId::from_window_element)?
+  }
+
   /// Implements [`NativeWindow::set_frame`].
   pub(crate) fn set_frame(&self, rect: &Rect) -> crate::Result<()> {
     // TODO: Consider adding a separate `set_frame_async` method which
@@ -225,6 +275,14 @@ impl NativeWindow {
     })?
   }
 
+  /// Implements [`NativeWindowExtMacOs::unmaximize`].
+  pub(crate) fn unmaximize(&self) -> crate::Result<()> {
+    self.element.with(move |el| -> crate::Result<()> {
+      let ax_bool = CFBoolean::new(false);
+      el.set_attribute::<CFBoolean>("AXFullScreen", &ax_bool.into())
+    })?
+  }
+
   /// Implements [`NativeWindow::focus`].
   pub(crate) fn focus(&self) -> crate::Result<()> {
     let psn = self.application.psn()?;
@@ -253,6 +311,27 @@ impl NativeWindow {
 
       Ok(())
     })?
+  }
+
+  /// Implements [`NativeWindowExtMacOs::set_border_color`].
+  pub(crate) fn set_border_color(
+    &self,
+    color: Option<&Color>,
+  ) -> crate::Result<()> {
+    let window_id = self.id();
+    let mut manager = BORDER_OVERLAY_MANAGER.lock().map_err(|_| {
+      crate::Error::Platform(
+        "Border overlay manager lock poisoned.".to_string(),
+      )
+    })?;
+
+    let Some(color) = color else {
+      manager.remove(window_id);
+      return Ok(());
+    };
+
+    let frame = self.frame()?;
+    manager.set_border_color(window_id, &frame, Some(color))
   }
 
   /// Executes a callback with the `AXEnhancedUserInterface` attribute
@@ -394,9 +473,13 @@ impl From<NativeWindow> for crate::NativeWindow {
 pub(crate) fn visible_windows(
   dispatcher: &Dispatcher,
 ) -> crate::Result<Vec<crate::NativeWindow>> {
+  // Self-filtering: exclude GlazeWM's own overlay windows.
+  let own_pid = std::process::id().cast_signed();
+
   Ok(
     platform_impl::all_applications(dispatcher)?
       .iter()
+      .filter(|app| app.pid != own_pid)
       .filter_map(|app| app.windows().ok())
       .flat_map(std::iter::IntoIterator::into_iter)
       .collect(),
