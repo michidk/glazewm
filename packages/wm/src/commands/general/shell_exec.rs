@@ -37,13 +37,10 @@ pub fn shell_exec(
   let result = {
     #[cfg(target_os = "macos")]
     {
-      let parsed_args = split_shell_args(&args)
-        .unwrap_or_else(|| args.split_whitespace().map(String::from).collect());
-      Shell::spawn(
-        &program,
-        parsed_args,
-        &CommandOptions::default(),
-      )
+      let parsed_args = split_shell_args(&args).unwrap_or_else(|| {
+        args.split_whitespace().map(String::from).collect()
+      });
+      Shell::spawn(&program, parsed_args, &CommandOptions::default())
     }
     #[cfg(target_os = "windows")]
     {
