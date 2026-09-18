@@ -45,6 +45,9 @@ mod user_config;
 mod wm;
 mod wm_state;
 
+#[cfg(test)]
+mod test_utils;
+
 /// Main entry point for the application.
 ///
 /// Conditionally starts the WM or runs a CLI command based on the given
@@ -178,6 +181,8 @@ async fn start_wm(
 
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
+  cleanup_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
   loop {
     let res = tokio::select! {
