@@ -214,9 +214,7 @@ impl NativeWindow {
   /// For native macOS tab groups, the `CGWindowID` changes on tab
   /// switch even though the `AXUIElement` stays the same.
   pub(crate) fn current_window_id(&self) -> crate::Result<WindowId> {
-    self
-      .element
-      .with(|el| Ok(WindowId::from_window_element(el)))?
+    self.element.with(WindowId::from_window_element)?
   }
 
   /// Implements [`NativeWindow::set_frame`].
