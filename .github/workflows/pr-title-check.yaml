@@ -4,24 +4,10 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
-permissions: {}
-
 jobs:
   pr-title-check:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate conventional PR title
-        shell: python
-        run: |
-          import json
-          import os
-          import re
-          import sys
-
-          with open(os.environ["GITHUB_EVENT_PATH"]) as event_file:
-              title = json.load(event_file)["pull_request"]["title"]
-
-          pattern = r"(?:build|chore|docs|feat|fix|perf|refactor|revert|style|test)(?:\([a-z0-9][a-z0-9._/-]*\))?!?: [a-z0-9].*[^.\s]"
-          if not re.fullmatch(pattern, title):
-              print("::error::Use a conventional title, e.g. feat(macos): fit fixed window dimensions")
-              sys.exit(1)
+      - uses: glzr-io/actions/semantic-prs@main
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
