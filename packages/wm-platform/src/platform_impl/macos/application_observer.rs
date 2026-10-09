@@ -80,11 +80,15 @@ impl ApplicationObserver {
         ));
       }
 
-      CFRetained::retain(NonNull::new(observer).ok_or_else(|| {
+      // AXObserverCreate transfers ownership. Adopt its reference so a
+      // failed attempt releases the observer rather than leaking it.
+      CFRetained::from_raw(NonNull::new(observer).ok_or_else(|| {
         crate::Error::InvalidPointer("AXObserver is null.".to_string())
       })?)
     };
 
+    let runloop =
+      CFRunLoop::current().ok_or(crate::Error::EventLoopStopped)?;
     let app_windows = Arc::new(Mutex::new(app.windows()?));
     let context = Box::into_raw(Box::new(ApplicationEventContext {
       application: app.clone(),
@@ -93,17 +97,33 @@ impl ApplicationObserver {
       observer: observer.clone(),
     }));
 
-    let runloop =
-      CFRunLoop::current().ok_or(crate::Error::EventLoopStopped)?;
+    // Subscribe before attaching the source: a failed attempt must not
+    // leave callbacks pointing at an abandoned context.
+    if let Err(error) =
+      Self::register_app_notifications(app, &observer, context)
+    {
+      if let Ok(element) = app.ax_element.get_ref() {
+        for notification in AX_APP_NOTIFICATIONS {
+          unsafe {
+            observer.remove_notification(
+              element,
+              &CFString::from_static_str(notification),
+            );
+          }
+        }
+      }
+      // SAFETY: The source has never been attached, so no callbacks can
+      // have received this context. All subscriptions were removed above.
+      unsafe {
+        drop(Box::from_raw(context));
+      }
+      return Err(error);
+    }
 
     let observer_source = unsafe { observer.run_loop_source() };
     runloop.add_source(Some(&observer_source), unsafe {
       kCFRunLoopDefaultMode
     });
-
-    // Register for all window notifications.
-    // TODO: Remove from runloop if registration fails.
-    Self::register_app_notifications(app, &observer, context)?;
 
     // Emit `WindowEvent::Shown` for all existing windows.
     for window in app_windows.lock().unwrap().iter() {
@@ -157,10 +177,13 @@ impl ApplicationObserver {
         );
 
         if result != AXError::Success {
-          return Err(crate::Error::Platform(format!(
-            "Failed to add notification {} for PID {}: {:?}",
-            notification, app.pid, result
-          )));
+          return Err(crate::Error::Accessibility(
+            format!(
+              "AXObserverAddNotification({notification}) for PID {}",
+              app.pid
+            ),
+            result.0,
+          ));
         }
       }
     }
