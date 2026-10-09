@@ -307,10 +307,6 @@ window_effects:
 
 The `window_behavior` config option exists to customize the states that a window can be in (`tiling`, `floating`, `minimized`, and `fullscreen`).
 
-On macOS, tiled windows with a fixed width or height keep that dimension. For example, System Settings stays tiled at its supported width while its height follows the layout. Flexible neighboring tiles receive the remaining space. This also works with nested splits and lone windows; no application-specific floating rule is needed.
-
-GlazeWM checks both larger and smaller sizes after a window refuses its tile size, so a normal minimum or maximum size does not count as a fixed dimension. Detection briefly probes the affected dimensions and restores the native size. Results are cached until the application accepts a different size. If every tile is fixed, unused space remains; if their required dimensions exceed the workspace, the layout cannot fit them all within its bounds.
-
 ```yaml
 window_behavior:
   # New windows are created in this state whenever possible.
