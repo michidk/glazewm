@@ -154,6 +154,15 @@ pub trait NativeWindowExtMacOs {
   ///
   /// This method is only available on macOS.
   fn layer(&self) -> crate::Result<i32>;
+
+  /// Detects fixed dimensions after a window refused its requested tile
+  /// size. Probes only unknown dimensions and restores the original
+  /// native size.
+  fn detect_fixed_size(
+    &self,
+    requested: &Rect,
+    known: crate::FixedWindowSize,
+  ) -> crate::Result<crate::FixedWindowSize>;
 }
 
 #[cfg(target_os = "macos")]
@@ -212,6 +221,14 @@ impl NativeWindowExtMacOs for NativeWindow {
 
   fn layer(&self) -> crate::Result<i32> {
     self.inner.layer()
+  }
+
+  fn detect_fixed_size(
+    &self,
+    requested: &Rect,
+    known: crate::FixedWindowSize,
+  ) -> crate::Result<crate::FixedWindowSize> {
+    self.inner.detect_fixed_size(requested, known)
   }
 }
 
