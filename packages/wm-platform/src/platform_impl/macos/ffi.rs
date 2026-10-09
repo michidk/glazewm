@@ -80,6 +80,14 @@ unsafe extern "C" {
     level: *mut i32,
   ) -> CGError;
 
+  /// Reads the committed window frame rather than `AXSize`'s transient
+  /// cache.
+  pub(crate) fn SLSGetWindowBounds(
+    connection: SLSConnection,
+    window_id: CGWindowID,
+    bounds: *mut CGRect,
+  ) -> CGError;
+
   /// Creates a new `SkyLight` connection.
   #[allow(dead_code)]
   pub(crate) fn SLSNewConnection(

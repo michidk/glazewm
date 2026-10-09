@@ -180,6 +180,24 @@ fn redraw_containers(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let windows_to_redraw = state.windows_to_redraw();
+  // Fitting a fixed dimension can change every tile in its workspace.
+  let redraw_workspaces = windows_to_redraw
+    .iter()
+    .filter_map(|window| {
+      window.workspace().map(|workspace| workspace.id())
+    })
+    .collect::<Vec<_>>();
+  let windows_to_redraw = state
+    .windows()
+    .into_iter()
+    .filter(|window| {
+      windows_to_redraw.contains(window)
+        || (window.state() == WindowState::Tiling
+          && window.workspace().is_some_and(|workspace| {
+            redraw_workspaces.contains(&workspace.id())
+          }))
+    })
+    .collect::<Vec<_>>();
   let windows_to_bring_to_front =
     windows_to_bring_to_front(focused_container, state)?;
 
@@ -216,146 +234,168 @@ fn redraw_containers(
   #[cfg(target_os = "macos")]
   let mut has_showing_transition = false;
 
-  for window in windows_to_update.iter().rev() {
-    let should_bring_to_front = windows_to_bring_to_front.contains(window);
+  // A native resize may reveal a fixed dimension. Recompute affected tiles
+  // in the same sync so earlier siblings and borders also use the fitted
+  // layout. Detection is cached and there are only two dimensions to
+  // learn.
+  for _ in 0..3 {
+    let mut fixed_size_changed = false;
+    for window in windows_to_update.iter().rev() {
+      let previous_fixed_size = window.native_properties().fixed_size;
+      let should_bring_to_front =
+        windows_to_bring_to_front.contains(window);
 
-    let workspace =
-      window.workspace().context("Window has no workspace.")?;
+      let workspace =
+        window.workspace().context("Window has no workspace.")?;
 
-    let monitor = window.monitor().context("No monitor.")?;
-    let hide_corner = monitors_by_hide_corner
-      .iter()
-      .find(|(m, _)| m.id() == monitor.id())
-      .map(|(_, hide_corner)| hide_corner)
-      .context("Monitor not found in hide corner map.")?;
+      let monitor = window.monitor().context("No monitor.")?;
+      let hide_corner = monitors_by_hide_corner
+        .iter()
+        .find(|(m, _)| m.id() == monitor.id())
+        .map(|(_, hide_corner)| hide_corner)
+        .context("Monitor not found in hide corner map.")?;
 
-    // Whether the window should be shown above all other windows.
-    let z_order = match window.state() {
-      WindowState::Floating(config) if config.shown_on_top => {
-        WindowZOrder::TopMost
-      }
-      WindowState::Fullscreen(config) if config.shown_on_top => {
-        WindowZOrder::TopMost
-      }
-      _ if should_bring_to_front => {
-        let focused_descendant = workspace
-          .descendant_focus_order()
-          .next()
-          .and_then(|container| container.as_window_container().ok());
+      // Whether the window should be shown above all other windows.
+      let z_order = match window.state() {
+        WindowState::Floating(config) if config.shown_on_top => {
+          WindowZOrder::TopMost
+        }
+        WindowState::Fullscreen(config) if config.shown_on_top => {
+          WindowZOrder::TopMost
+        }
+        _ if should_bring_to_front => {
+          let focused_descendant = workspace
+            .descendant_focus_order()
+            .next()
+            .and_then(|container| container.as_window_container().ok());
 
-        if let Some(focused_descendant) = focused_descendant {
-          if window.id() == focused_descendant.id() {
-            WindowZOrder::Normal
+          if let Some(focused_descendant) = focused_descendant {
+            if window.id() == focused_descendant.id() {
+              WindowZOrder::Normal
+            } else {
+              WindowZOrder::AfterWindow(focused_descendant.native().id())
+            }
           } else {
-            WindowZOrder::AfterWindow(focused_descendant.native().id())
+            WindowZOrder::Normal
           }
-        } else {
-          WindowZOrder::Normal
+        }
+        _ => WindowZOrder::Normal,
+      };
+
+      // Set the z-order of the window.
+      //
+      // NOTE: macOS doesn't have a robust public API for setting the
+      // z-order of a window. See `NativeWindow::raise` for more
+      // details.
+      #[cfg(target_os = "windows")]
+      if should_bring_to_front && !windows_to_redraw.contains(window) {
+        tracing::info!("Updating window z-order: {window}");
+
+        if let Err(err) = window.native().set_z_order(&z_order) {
+          tracing::warn!("Failed to set window z-order: {}", err);
         }
       }
-      _ => WindowZOrder::Normal,
-    };
 
-    // Set the z-order of the window.
-    //
-    // NOTE: macOS doesn't have a robust public API for setting the z-order
-    // of a window. See `NativeWindow::raise` for more details.
-    #[cfg(target_os = "windows")]
-    if should_bring_to_front && !windows_to_redraw.contains(window) {
-      tracing::info!("Updating window z-order: {window}");
-
-      if let Err(err) = window.native().set_z_order(&z_order) {
-        tracing::warn!("Failed to set window z-order: {}", err);
+      // Skip updating the window's position if it only required a z-order
+      // change.
+      if !windows_to_redraw.contains(window) {
+        continue;
       }
-    }
 
-    // Skip updating the window's position if it only required a z-order
-    // change.
-    if !windows_to_redraw.contains(window) {
-      continue;
-    }
+      // Transition display state depending on whether window will be
+      // shown or hidden.
+      #[cfg(target_os = "macos")]
+      let prev_display_state = window.display_state();
 
-    // Transition display state depending on whether window will be
-    // shown or hidden.
-    #[cfg(target_os = "macos")]
-    let prev_display_state = window.display_state();
+      window.set_display_state(
+        match (window.display_state(), workspace.is_displayed()) {
+          (DisplayState::Hidden | DisplayState::Hiding, true) => {
+            DisplayState::Showing
+          }
+          (DisplayState::Shown | DisplayState::Showing, false) => {
+            DisplayState::Hiding
+          }
+          _ => window.display_state(),
+        },
+      );
 
-    window.set_display_state(
-      match (window.display_state(), workspace.is_displayed()) {
-        (DisplayState::Hidden | DisplayState::Hiding, true) => {
-          DisplayState::Showing
-        }
-        (DisplayState::Shown | DisplayState::Showing, false) => {
-          DisplayState::Hiding
-        }
-        _ => window.display_state(),
-      },
-    );
-
-    #[cfg(target_os = "macos")]
-    if prev_display_state != window.display_state() {
-      has_hiding_transition |=
-        matches!(window.display_state(), DisplayState::Hiding);
-      has_showing_transition |=
-        matches!(window.display_state(), DisplayState::Showing);
-    }
-
-    let is_visible = matches!(
-      window.display_state(),
-      DisplayState::Showing | DisplayState::Shown
-    );
-
-    if let Err(err) =
-      reposition_window(window, *hide_corner, &z_order, is_visible, config)
-    {
-      tracing::warn!("Failed to set window position: {}", err);
-    }
-
-    // Destroy overlay for windows transitioning to hidden. Overlays
-    // for visible windows are (re)created by `apply_window_effects`.
-    #[cfg(target_os = "macos")]
-    if !is_visible {
-      macos_remove_border(window.native().id());
-    }
-
-    // Whether the window is either transitioning to or from fullscreen.
-    // TODO: This check can be improved since `prev_state` can be
-    // fullscreen without it needing to be marked as not fullscreen.
-    #[cfg(target_os = "windows")]
-    {
-      let is_transitioning_fullscreen =
-        match (window.prev_state(), window.state()) {
-          (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
-          (Some(WindowState::Fullscreen(_)), _) => true,
-          _ => false,
-        };
-
-      if is_transitioning_fullscreen {
-        if let Err(err) = window.native().mark_fullscreen(matches!(
-          window.state(),
-          WindowState::Fullscreen(_)
-        )) {
-          tracing::warn!("Failed to mark window as fullscreen: {}", err);
-        }
+      #[cfg(target_os = "macos")]
+      if prev_display_state != window.display_state() {
+        has_hiding_transition |=
+          matches!(window.display_state(), DisplayState::Hiding);
+        has_showing_transition |=
+          matches!(window.display_state(), DisplayState::Showing);
       }
-    }
 
-    // Skip setting taskbar visibility if the window is hidden (has no
-    // effect). Since cloaked windows are normally always visible in the
-    // taskbar, we only need to set visibility if `show_all_in_taskbar` is
-    // `false`.
-    #[cfg(target_os = "windows")]
-    if config.value.general.hide_method == HideMethod::Cloak
-      && !config.value.general.show_all_in_taskbar
-      && matches!(
+      let is_visible = matches!(
         window.display_state(),
-        DisplayState::Showing | DisplayState::Hiding
-      )
-    {
-      if let Err(err) = window.native().set_taskbar_visibility(is_visible)
-      {
-        tracing::warn!("Failed to set taskbar visibility: {}", err);
+        DisplayState::Showing | DisplayState::Shown
+      );
+
+      if let Err(err) = reposition_window(
+        window,
+        *hide_corner,
+        &z_order,
+        is_visible,
+        config,
+      ) {
+        tracing::warn!("Failed to set window position: {}", err);
       }
+
+      fixed_size_changed |=
+        previous_fixed_size != window.native_properties().fixed_size;
+
+      // Destroy overlay for windows transitioning to hidden. Overlays
+      // for visible windows are (re)created by `apply_window_effects`.
+      #[cfg(target_os = "macos")]
+      if !is_visible {
+        macos_remove_border(window.native().id());
+      }
+
+      // Whether the window is either transitioning to or from fullscreen.
+      // TODO: This check can be improved since `prev_state` can be
+      // fullscreen without it needing to be marked as not fullscreen.
+      #[cfg(target_os = "windows")]
+      {
+        let is_transitioning_fullscreen =
+          match (window.prev_state(), window.state()) {
+            (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
+            (Some(WindowState::Fullscreen(_)), _) => true,
+            _ => false,
+          };
+
+        if is_transitioning_fullscreen {
+          if let Err(err) = window.native().mark_fullscreen(matches!(
+            window.state(),
+            WindowState::Fullscreen(_)
+          )) {
+            tracing::warn!("Failed to mark window as fullscreen: {}", err);
+          }
+        }
+      }
+
+      // Skip setting taskbar visibility if the window is hidden (has no
+      // effect). Since cloaked windows are normally always visible in the
+      // taskbar, we only need to set visibility if `show_all_in_taskbar`
+      // is `false`.
+      #[cfg(target_os = "windows")]
+      if config.value.general.hide_method == HideMethod::Cloak
+        && !config.value.general.show_all_in_taskbar
+        && matches!(
+          window.display_state(),
+          DisplayState::Showing | DisplayState::Hiding
+        )
+      {
+        if let Err(err) =
+          window.native().set_taskbar_visibility(is_visible)
+        {
+          tracing::warn!("Failed to set taskbar visibility: {}", err);
+        }
+      }
+    }
+
+    if !fixed_size_changed {
+      break;
     }
   }
 
@@ -486,7 +526,40 @@ fn reposition_window(
           first_result?;
         }
 
-        macos_update_border_position(window.native().id(), &rect);
+        if is_visible
+          && window.state() == WindowState::Tiling
+          && !window.has_pending_dpi_adjustment()
+        {
+          let properties = window.native_properties();
+          let requested_size = (rect.width(), rect.height());
+          if properties.fixed_size_probe != Some(requested_size) {
+            // Drop the native-window borrow before updating its cached
+            // properties (both live in the same RefCell).
+            let detected_size = window
+              .native()
+              .detect_fixed_size(&rect, properties.fixed_size);
+            match detected_size {
+              Ok(detected) => {
+                if detected != properties.fixed_size {
+                  tracing::info!("Detected fixed window dimensions: {detected:?} for {window}");
+                }
+                window.update_native_properties(|properties| {
+                  properties.fixed_size = detected;
+                  properties.fixed_size_probe = Some(requested_size);
+                });
+              }
+              Err(error) => {
+                tracing::debug!("Fixed-size detection skipped: {error}");
+              }
+            }
+          }
+        }
+        // Use the native fitted frame when detection changed the tile
+        // size.
+        let fitted_rect = window
+          .to_rect()?
+          .apply_delta(&window.total_border_delta()?, None);
+        macos_update_border_position(window.native().id(), &fitted_rect);
       }
     }
 
