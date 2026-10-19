@@ -4,10 +4,24 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
+permissions:
+  contents: read
+
 jobs:
   pr-title-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: glzr-io/actions/semantic-prs@main
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate conventional PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import sys
+
+          pattern = r"(build|chore|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\r\n]+"
+          if not re.fullmatch(pattern, os.environ["PR_TITLE"]):
+              print("::error::Use a conventional title, for example fix(macos): respect minimum window dimensions. Use ci as a scope, such as fix(ci): repair the build.")
+              sys.exit(1)
+          PYTHON
