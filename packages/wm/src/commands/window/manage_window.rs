@@ -120,6 +120,24 @@ fn check_is_manageable(
   // Ensure window has a valid process name, title, etc.
   let native_properties = NativeWindowProperties::try_from(native_window)?;
 
+  // Some windows are promoted to an overlay layer after their
+  // accessibility event is delivered. Re-check after reading metadata so
+  // they cannot enter the layout during that race.
+  #[cfg(target_os = "macos")]
+  {
+    use wm_platform::NativeWindowExtMacOs;
+
+    let layer = native_window.layer()?;
+    if !is_normal_window_layer(layer) {
+      tracing::debug!(
+        "Window {} not manageable: Core Graphics layer {}.",
+        native_window.id().0,
+        layer,
+      );
+      return Ok(None);
+    }
+  }
+
   #[cfg(target_os = "windows")]
   {
     use wm_platform::{
