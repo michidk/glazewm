@@ -147,6 +147,16 @@ fn check_is_manageable(
   // Ensure window has a valid process name, title, etc.
   let native_properties = NativeWindowProperties::try_from(native_window)?;
 
+  // Granola creates this transcript panel as a standard window when its
+  // corner overlay is hovered. Keep it out of the layout.
+  #[cfg(target_os = "macos")]
+  if is_granola_transcript_window(
+    &native_properties.process_name,
+    &native_properties.title,
+  ) {
+    return Ok(None);
+  }
+
   // Some windows are promoted to an overlay layer after their
   // accessibility event is delivered. Re-check after reading metadata so
   // they cannot enter the layout during that race.
@@ -210,6 +220,11 @@ fn is_normal_window_layer(layer: i32) -> bool {
   layer == 0
 }
 
+#[cfg(target_os = "macos")]
+fn is_granola_transcript_window(process_name: &str, title: &str) -> bool {
+  process_name == "Granola" && title == "Nub transcript"
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
   use super::*;
@@ -219,6 +234,13 @@ mod tests {
     assert!(is_normal_window_layer(0));
     assert!(!is_normal_window_layer(3));
     assert!(!is_normal_window_layer(1000));
+  }
+
+  #[test]
+  fn granola_transcript_window_is_ignored() {
+    assert!(is_granola_transcript_window("Granola", "Nub transcript"));
+    assert!(!is_granola_transcript_window("Granola", "Granola"));
+    assert!(!is_granola_transcript_window("Other app", "Nub transcript"));
   }
 }
 
