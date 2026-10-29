@@ -98,6 +98,13 @@ impl NativeWindow {
 
   /// Implements [`NativeWindow::is_valid`].
   pub(crate) fn is_valid(&self) -> bool {
+    // AX can keep returning attributes for a window after its application
+    // terminated. Check the owning application first so cleanup can remove
+    // stale windows even when no destroy notification was delivered.
+    if self.application.ns_app.isTerminated() {
+      return false;
+    }
+
     // Query `AXRole`, which is present on all valid `AXUIElement`s.
     self
       .element
