@@ -134,7 +134,11 @@ impl NativeWindow {
         }
         _ => true,
       })
-      .unwrap_or(false)
+      // Accessibility reads can fail transiently while an app is updating
+      // its window, for example during a title or display transition. Keep
+      // the managed record in that case; the owning-app termination check
+      // above is the reliable signal for cleanup.
+      .unwrap_or(true)
   }
 
   /// Implements [`NativeWindow::is_visible`].
