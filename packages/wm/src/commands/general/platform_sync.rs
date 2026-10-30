@@ -34,8 +34,22 @@ pub fn platform_sync(
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    redraw_containers(&focused_container, state, config)?;
+    // Each overflow pass floats one window or changes one split direction.
+    // Redraw again after probing because newly learned bounds affect
+    // siblings.
+    for _ in 0..=state.windows().len() * 2 {
+      resolve_tiling_overflow(state, config)?;
+      let focused =
+        state.focused_container().context("No focused container.")?;
+      redraw_containers(&focused, state, config)?;
+      if !resolve_tiling_overflow(state, config)? {
+        break;
+      }
+    }
   }
+
+  let focused_container =
+    state.focused_container().context("No focused container.")?;
 
   if state.pending_sync.needs_cursor_jump()
     && config.value.general.cursor_jump.enabled
@@ -78,6 +92,95 @@ pub fn platform_sync(
   state.pending_sync.clear();
 
   Ok(())
+}
+
+fn resolve_tiling_overflow(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
+  use crate::{
+    commands::window::update_window_state,
+    traits::{tiling_fits, TilingDirectionGetters},
+  };
+
+  // Walk parents before descendants so nested rectangles are valid after a
+  // parent changes direction. Only visible workspaces need intervention.
+  let parents = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_direction_container().ok())
+    .filter(|parent| parent.workspace().is_some_and(|w| w.is_displayed()))
+    .collect::<Vec<_>>();
+  for parent in parents {
+    let direction = parent.tiling_direction();
+    if tiling_fits(&parent, &direction)? {
+      continue;
+    }
+    let workspace = parent.workspace().context("No workspace.")?;
+    if tiling_fits(&parent, &direction.inverse())? {
+      parent.set_tiling_direction(direction.inverse());
+      state
+        .pending_sync
+        .queue_containers_to_redraw(workspace.tiling_children());
+      state.emit_event(WmEvent::TilingDirectionChanged {
+        direction_container: parent.to_dto()?,
+        new_tiling_direction: direction.inverse(),
+      });
+      return Ok(true);
+    }
+    let Some(window) = parent
+      .descendants()
+      .filter_map(|container| container.as_window_container().ok())
+      .filter(|window| window.state() == WindowState::Tiling)
+      .last()
+    else {
+      continue;
+    };
+    let bounds = workspace.to_rect()?;
+    let properties = window.native_properties();
+    let width = window
+      .floating_placement()
+      .width()
+      .max(
+        properties
+          .fixed_size
+          .width
+          .or(properties.fixed_size.minimum_width)
+          .unwrap_or(1),
+      )
+      .min(bounds.width())
+      .max(1);
+    let height = window
+      .floating_placement()
+      .height()
+      .max(
+        properties
+          .fixed_size
+          .height
+          .or(properties.fixed_size.minimum_height)
+          .unwrap_or(1),
+      )
+      .min(bounds.height())
+      .max(1);
+    window.set_floating_placement(
+      Rect::from_xy(0, 0, width, height).translate_to_center(&bounds),
+    );
+    window.set_has_custom_floating_placement(true);
+    tracing::warn!("Floating window because native minimum sizes exceed the workspace: {window}");
+    update_window_state(
+      window,
+      WindowState::Floating(
+        config.value.window_behavior.state_defaults.floating.clone(),
+      ),
+      state,
+      config,
+    )?;
+    state
+      .pending_sync
+      .queue_containers_to_redraw(workspace.tiling_children());
+    return Ok(true);
+  }
+  Ok(false)
 }
 
 fn sync_focus(
@@ -178,6 +281,25 @@ fn redraw_containers(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let windows_to_redraw = state.windows_to_redraw();
+  // Fitting a fixed dimension can change every tile in its workspace.
+  let redraw_workspaces = windows_to_redraw
+    .iter()
+    .filter_map(|window| {
+      window.workspace().map(|workspace| workspace.id())
+    })
+    .collect::<Vec<_>>();
+  let windows_to_redraw = state
+    .windows()
+    .into_iter()
+    .filter(|window| {
+      windows_to_redraw.contains(window)
+        || (window.state() == WindowState::Tiling
+          && window.workspace().is_some_and(|workspace| {
+            redraw_workspaces.contains(&workspace.id())
+          }))
+    })
+    .collect::<Vec<_>>();
+
   let windows_to_bring_to_front =
     windows_to_bring_to_front(focused_container, state)?;
 

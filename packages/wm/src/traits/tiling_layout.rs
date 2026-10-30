@@ -3,7 +3,7 @@ use wm_common::TilingDirection;
 use wm_platform::Rect;
 
 use crate::{
-  models::TilingContainer,
+  models::{DirectionContainer, TilingContainer},
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters,
     TilingSizeGetters, WindowGetters,
@@ -101,6 +101,34 @@ fn combine_constraints(
     && children.iter().all(|child| child.fixed.is_some()))
   .then_some(minimum);
   LengthConstraint { fixed, minimum }
+}
+
+/// Check both axes before submitting a layout that native windows cannot
+/// fit.
+pub fn tiling_fits(
+  parent: &DirectionContainer,
+  direction: &TilingDirection,
+) -> anyhow::Result<bool> {
+  let rect = parent.to_rect()?;
+  let children = parent.tiling_children().collect::<Vec<_>>();
+  let Some(first) = children.first() else {
+    return Ok(true);
+  };
+  let (horizontal_gap, vertical_gap) = first.inner_gaps()?;
+  for (width, available, gap) in [
+    (true, rect.width(), horizontal_gap),
+    (false, rect.height(), vertical_gap),
+  ] {
+    let constraints = children
+      .iter()
+      .map(|child| length_constraint(child, width))
+      .collect::<anyhow::Result<Vec<_>>>()?;
+    let along = width == (*direction == TilingDirection::Horizontal);
+    if combine_constraints(&constraints, along, gap).minimum > available {
+      return Ok(false);
+    }
+  }
+  Ok(true)
 }
 
 /// Reserve fixed/minimum lengths and redistribute the remaining space in
@@ -276,6 +304,51 @@ mod tests {
       fixed: Some(length),
       minimum: length,
     }
+  }
+
+  #[test]
+  fn minimums_fit_vertically_but_not_horizontally() {
+    let widths = [860, 694, 500, 380].map(|minimum| LengthConstraint {
+      fixed: None,
+      minimum,
+    });
+    let heights = [LengthConstraint {
+      fixed: None,
+      minimum: 180,
+    }; 4];
+    assert!(combine_constraints(&widths, true, 10).minimum > 1718);
+    assert!(combine_constraints(&widths, false, 10).minimum <= 1718);
+    assert!(combine_constraints(&heights, true, 10).minimum <= 1067);
+    let lengths = allocate_lengths(1037, &[0.25; 4], &heights, false);
+    for index in 0..4 {
+      let rect = tile_rect(
+        &Rect::from_xy(5, 45, 1718, 1067),
+        &lengths,
+        index,
+        10,
+        1718,
+        false,
+      );
+      assert!(rect.top >= 45 && rect.bottom <= 1112);
+      assert!(rect.height() >= 180);
+    }
+  }
+
+  #[test]
+  fn neither_direction_fits_when_both_axes_are_overconstrained() {
+    let widths = [860, 694, 500, 380].map(|minimum| LengthConstraint {
+      fixed: None,
+      minimum,
+    });
+    let heights = [LengthConstraint {
+      fixed: None,
+      minimum: 400,
+    }; 4];
+    assert!(combine_constraints(&widths, true, 10).minimum > 1718);
+    assert!(combine_constraints(&heights, true, 10).minimum > 1067);
+    let nested = combine_constraints(&[fixed(1800)], false, 10);
+    assert!(combine_constraints(&[nested], true, 10).minimum > 1718);
+    assert!(combine_constraints(&[nested], false, 10).minimum > 1718);
   }
 
   #[test]
