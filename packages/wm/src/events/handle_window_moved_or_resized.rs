@@ -3,6 +3,8 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, HideMethod, WindowState,
 };
+#[cfg(target_os = "macos")]
+use wm_platform::NativeWindowExtMacOs;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "macos")]
@@ -38,6 +40,10 @@ pub fn handle_window_moved_or_resized(
   if let Some(window) = found_window {
     let old_frame_position = window.native_properties().frame;
     let frame_position = try_warn!(window.native().frame());
+    #[cfg(target_os = "macos")]
+    if state.dispatcher.is_mouse_down(&MouseButton::Left) {
+      window.native().cancel_pending_frame_retry();
+    }
 
     window.update_native_properties(|properties| {
       properties.frame = frame_position.clone();

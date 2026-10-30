@@ -5,6 +5,8 @@ use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
   WindowState, WmEvent,
 };
+#[cfg(target_os = "macos")]
+use wm_platform::NativeWindowExtMacOs;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
@@ -390,22 +392,15 @@ fn reposition_window(
   } else {
     #[cfg(target_os = "macos")]
     {
-      let first_result = window.native().set_frame(&rect);
-
-      // When there's a mismatch between the DPI of the monitor and the
-      // window, the first `set_frame` often fails or mis-sizes during
-      // cross-DPI transitions. Re-apply after a short delay to allow
-      // macOS to commit the screen association change.
       if window.has_pending_dpi_adjustment() {
-        let native = window.native().clone();
-        let rect = rect.clone();
-
-        tokio::task::spawn(async move {
-          tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-          _ = native.set_frame(&rect);
-        });
+        if let Err(error) = window.native().set_frame_with_dpi_retry(&rect)
+        {
+          tracing::debug!(
+            "Initial cross-DPI frame failed; retry queued: {error}"
+          );
+        }
       } else {
-        first_result?;
+        window.native().set_frame(&rect)?;
       }
     }
 
