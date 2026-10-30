@@ -1,7 +1,7 @@
 use std::{ffi::c_void, ptr::NonNull};
 
 use objc2_application_services::{AXError, AXUIElement};
-use objc2_core_foundation::{CGRect, CFUUID};
+use objc2_core_foundation::{CGPoint, CGRect, CFUUID};
 use objc2_core_graphics::{CGDirectDisplayID, CGError, CGWindowID};
 
 use crate::platform_impl::ProcessId;
@@ -71,6 +71,12 @@ unsafe extern "C" {
 
 #[link(name = "SkyLight", kind = "framework")]
 unsafe extern "C" {
+  pub(crate) fn SLSGetWindowBounds(
+    connection: i32,
+    window_id: CGWindowID,
+    bounds: *mut CGRect,
+  ) -> CGError;
+
   /// Returns the main `SkyLight` connection ID for the current process.
   pub(crate) fn SLSMainConnectionID() -> SLSConnection;
 
@@ -120,6 +126,20 @@ unsafe extern "C" {
     x: f32,
     y: f32,
     shape: *const c_void,
+  ) -> i32;
+
+  /// Moves a window without changing its shape or backing content.
+  pub(crate) fn SLSMoveWindow(
+    conn: SLSConnection,
+    wid: SLSWindow,
+    point: *const CGPoint,
+  ) -> i32;
+
+  /// Publishes drawn overlay content to the `WindowServer`.
+  pub(crate) fn SLSFlushWindowContentRegion(
+    conn: SLSConnection,
+    wid: SLSWindow,
+    dirty: *const c_void,
   ) -> i32;
 
   /// Orders a `SkyLight` window relative to another window.

@@ -432,12 +432,18 @@ fn reposition_window(
     window.native().resize(rect.width(), rect.height())?;
 
     #[cfg(target_os = "macos")]
-    macos_update_border_position(window.native().id(), &rect);
+    macos_update_border_position(
+      window.native().id(),
+      &window.native().frame()?,
+    );
   } else {
     #[cfg(target_os = "macos")]
     {
       window.native().set_frame(&rect)?;
-      macos_update_border_position(window.native().id(), &rect);
+      macos_update_border_position(
+        window.native().id(),
+        &window.native().frame()?,
+      );
     }
 
     #[cfg(target_os = "windows")]

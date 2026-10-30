@@ -3434,6 +3434,7 @@ name = "wm-platform"
 version = "0.0.0"
 dependencies = [
  "core-graphics",
+ "foreign-types",
  "home",
  "libtest-mimic-collect",
  "objc2",
