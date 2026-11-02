@@ -107,7 +107,7 @@ fn combine_constraints(
 /// fit.
 pub fn tiling_fits(
   parent: &DirectionContainer,
-  direction: wm_common::TilingDirection,
+  direction: &wm_common::TilingDirection,
 ) -> anyhow::Result<bool> {
   let rect = parent.to_rect()?;
   let children = parent.tiling_children().collect::<Vec<_>>();
@@ -123,7 +123,7 @@ pub fn tiling_fits(
       .iter()
       .map(|child| length_constraint(child, width))
       .collect::<anyhow::Result<Vec<_>>>()?;
-    let along = width == (direction == TilingDirection::Horizontal);
+    let along = width == (*direction == TilingDirection::Horizontal);
     if combine_constraints(&constraints, along, gap).minimum > available {
       return Ok(false);
     }
