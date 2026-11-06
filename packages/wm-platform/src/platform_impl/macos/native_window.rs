@@ -1,6 +1,6 @@
 use std::sync::{
   atomic::{AtomicU64, Ordering},
-  Arc,
+  Arc, Mutex,
 };
 
 use objc2::MainThreadMarker;
@@ -125,6 +125,82 @@ fn apply_frame(
   Ok(())
 }
 
+/// AX can echo a refused request before the app commits its real size.
+/// An inconclusive observation must not be cached as a completed probe.
+fn ensure_size_settled(
+  ax: (f64, f64),
+  committed: (i32, i32),
+) -> crate::Result<()> {
+  if (ax.0 - f64::from(committed.0)).abs() > 0.5
+    || (ax.1 - f64::from(committed.1)).abs() > 0.5
+  {
+    Err(crate::Error::Platform(
+      "Window resize has not settled; retry fixed-size detection later."
+        .into(),
+    ))
+  } else {
+    Ok(())
+  }
+}
+
+fn resolve_resizability(
+  result: AXError,
+  settable: bool,
+) -> crate::Result<bool> {
+  match result {
+    AXError::Success => Ok(settable),
+    // Missing capability metadata is not evidence of a fixed-size window.
+    AXError::AttributeUnsupported | AXError::NotImplemented => Ok(true),
+    _ => Err(crate::Error::Accessibility("AXSize".into(), result.0)),
+  }
+}
+
+/// Containment must use the accepted native size, never the tile size.
+fn contain_native_frame(
+  bounds: &Rect,
+  requested: Option<&Rect>,
+  mut read: impl FnMut() -> crate::Result<Rect>,
+  move_to: impl FnOnce(&Rect) -> crate::Result<()>,
+) -> crate::Result<Rect> {
+  let frame = read()?;
+  let positioned = requested.map_or_else(
+    || frame.clone(),
+    |requested| {
+      Rect::from_xy(
+        requested.x(),
+        requested.y(),
+        frame.width(),
+        frame.height(),
+      )
+    },
+  );
+  let contained = positioned.translate_within(bounds);
+  if contained == frame {
+    Ok(frame)
+  } else {
+    move_to(&contained)?;
+    read()
+  }
+}
+
+/// Some apps reject `AXSize` with an error rather than accepting a clamped
+/// size. Still move their accepted frame onto the assigned monitor.
+fn place_visible_frame(
+  requested: &Rect,
+  bounds: &Rect,
+  apply: impl FnOnce() -> crate::Result<()>,
+  read: impl FnMut() -> crate::Result<Rect>,
+  mut move_to: impl FnMut(&Rect) -> crate::Result<()>,
+) -> crate::Result<Rect> {
+  if let Err(error) = apply() {
+    tracing::debug!(
+      "Frame write failed; positioning the accepted native size: {error}"
+    );
+    move_to(requested)?;
+  }
+  contain_native_frame(bounds, Some(requested), read, move_to)
+}
+
 /// Runs a queued write only if no newer command or user drag replaced it.
 fn apply_frame_at_revision(
   current: &AtomicU64,
@@ -144,6 +220,7 @@ pub(crate) struct NativeWindow {
   pub(crate) element: Arc<ThreadBound<CFRetained<AXUIElement>>>,
   pub(crate) application: Application,
   frame_revision: Arc<AtomicU64>,
+  commanded_frames: Arc<Mutex<Option<[Rect; 2]>>>,
 }
 
 impl NativeWindow {
@@ -159,6 +236,7 @@ impl NativeWindow {
       id,
       application,
       frame_revision: Arc::new(AtomicU64::new(0)),
+      commanded_frames: Arc::new(Mutex::new(None)),
     }
   }
 
@@ -313,10 +391,18 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::is_resizable`].
-  #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
   pub(crate) fn is_resizable(&self) -> crate::Result<bool> {
-    // TODO: Not sure if this is even available via the AX API.
-    Ok(true)
+    self.element.with(|el| {
+      let mut settable = 0;
+      // SAFETY: The output points to a live stack byte for this call.
+      let result = unsafe {
+        el.is_attribute_settable(
+          &CFString::from_str("AXSize"),
+          std::ptr::NonNull::from(&mut settable),
+        )
+      };
+      resolve_resizability(result, settable != 0)
+    })?
   }
 
   /// Implements [`NativeWindow::is_desktop_window`].
@@ -359,27 +445,104 @@ impl NativeWindow {
   /// Implements [`NativeWindow::set_frame`].
   pub(crate) fn set_frame(&self, rect: &Rect) -> crate::Result<()> {
     let revision = self.next_frame_revision();
-    self.set_frame_at_revision(rect, revision, false)
+    self.set_frame_at_revision(rect, revision, false, None)
   }
 
-  /// Retries a cross-DPI frame only while it is the latest request.
-  pub(crate) fn set_frame_with_dpi_retry(
+  /// Applies the same monitor containment to initial and delayed writes.
+  pub(crate) fn set_frame_within(
     &self,
     rect: &Rect,
+    bounds: &Rect,
+    retry: bool,
   ) -> crate::Result<()> {
+    let rect = Rect::from_xy(
+      rect.x(),
+      rect.y(),
+      rect.width().max(1),
+      rect.height().max(1),
+    )
+    .clamp_size(bounds.width(), bounds.height())
+    .translate_within(bounds);
     let revision = self.next_frame_revision();
-    let result = self.set_frame_at_revision(rect, revision, true);
-    let native = self.clone();
-    let rect = rect.clone();
-    tokio::task::spawn(async move {
-      tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-      if let Err(error) =
-        native.set_frame_at_revision(&rect, revision, true)
-      {
-        tracing::warn!("Failed to retry macOS window frame: {error}");
-      }
-    });
+    let result =
+      self.set_frame_at_revision(&rect, revision, retry, Some(bounds));
+    if retry {
+      let native = self.clone();
+      let bounds = bounds.clone();
+      tokio::task::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Err(error) = native.set_frame_at_revision(
+          &rect,
+          revision,
+          true,
+          Some(&bounds),
+        ) {
+          tracing::warn!("Failed to retry macOS window frame: {error}");
+        }
+      });
+    }
     result
+  }
+
+  pub(crate) fn is_programmatic_frame(&self, frame: &Rect) -> bool {
+    self
+      .commanded_frames
+      .lock()
+      .unwrap()
+      .as_ref()
+      .is_some_and(|frames| frames.contains(frame))
+  }
+
+  fn remember_frame(&self, requested: &Rect, committed: &Rect) {
+    *self.commanded_frames.lock().unwrap() =
+      Some([requested.clone(), committed.clone()]);
+  }
+
+  /// Keep floating windows at their own placement while containing them.
+  pub(crate) fn constrain_to_bounds(
+    &self,
+    bounds: &Rect,
+  ) -> crate::Result<Rect> {
+    self.reconcile_frame(None, bounds)
+  }
+
+  /// Re-anchor a tile without retrying a native size the app refused.
+  pub(crate) fn reconcile_tiling_frame(
+    &self,
+    requested: &Rect,
+    bounds: &Rect,
+  ) -> crate::Result<Rect> {
+    self.reconcile_frame(Some(requested), bounds)
+  }
+
+  fn reconcile_frame(
+    &self,
+    requested: Option<&Rect>,
+    bounds: &Rect,
+  ) -> crate::Result<Rect> {
+    self.with_enhanced_ui_disabled(|el| {
+      let before = self.committed_frame()?;
+      let frame = contain_native_frame(
+        bounds,
+        requested,
+        || self.committed_frame(),
+        |frame| {
+          let point = CGPoint::new(frame.x().into(), frame.y().into());
+          el.set_attribute("AXPosition", &AXValue::new_strict(&point)?)
+        },
+      )?;
+      if frame != before {
+        self.remember_frame(&frame, &frame);
+        if let Err(error) =
+          platform_impl::update_border_position(self.id(), &frame)
+        {
+          tracing::warn!(
+            "Failed to sync border after macOS reconciliation: {error}"
+          );
+        }
+      }
+      Ok(frame)
+    })
   }
 
   /// Invalidates delayed frame writes when a drag or lifecycle change
@@ -399,25 +562,47 @@ impl NativeWindow {
     rect: &Rect,
     revision: u64,
     force_size: bool,
+    bounds: Option<&Rect>,
   ) -> crate::Result<()> {
     let rect = rect.clone();
     self.with_enhanced_ui_disabled(move |el| -> crate::Result<()> {
       apply_frame_at_revision(&self.frame_revision, revision, || {
         let current = self.committed_frame().ok();
-        apply_frame(current.as_ref(), &rect, force_size, |attribute| {
-          match attribute {
-            FrameAttribute::Size => {
-              let size =
-                CGSize::new(rect.width().into(), rect.height().into());
-              el.set_attribute("AXSize", &AXValue::new_strict(&size)?)
+        let write_frame = || {
+          apply_frame(current.as_ref(), &rect, force_size, |attribute| {
+            match attribute {
+              FrameAttribute::Size => {
+                let size =
+                  CGSize::new(rect.width().into(), rect.height().into());
+                el.set_attribute("AXSize", &AXValue::new_strict(&size)?)
+              }
+              FrameAttribute::Position => {
+                let point = CGPoint::new(rect.x().into(), rect.y().into());
+                el.set_attribute(
+                  "AXPosition",
+                  &AXValue::new_strict(&point)?,
+                )
+              }
             }
-            FrameAttribute::Position => {
-              let point = CGPoint::new(rect.x().into(), rect.y().into());
+          })
+        };
+        let committed = if let Some(bounds) = bounds {
+          Some(place_visible_frame(
+            &rect,
+            bounds,
+            write_frame,
+            || self.committed_frame(),
+            |frame| {
+              let point = CGPoint::new(frame.x().into(), frame.y().into());
               el.set_attribute("AXPosition", &AXValue::new_strict(&point)?)
-            }
-          }
-        })?;
-        if let Ok(frame) = self.committed_frame() {
+            },
+          )?)
+        } else {
+          write_frame()?;
+          self.committed_frame().ok()
+        };
+        if let Some(frame) = committed {
+          self.remember_frame(&rect, &frame);
           if let Err(error) =
             platform_impl::update_border_position(self.id(), &frame)
           {
@@ -490,47 +675,55 @@ impl NativeWindow {
 
     // A pending resize may temporarily leave AX and WindowServer out of
     // sync. Don't infer constraints from that intermediate state.
-    let ax_size = self.size()?;
-    if (ax_size.0 - f64::from(original.0)).abs() > 0.5
-      || (ax_size.1 - f64::from(original.1)).abs() > 0.5
-    {
-      return Ok(known);
-    }
+    ensure_size_settled(self.size()?, original)?;
 
+    let original_frame = self.committed_frame()?;
     self.with_enhanced_ui_disabled(move |el| {
-      let original_size = CGSize::new(original.0.into(), original.1.into());
+      let original_size =
+        CGSize::new(original.0.into(), original.1.into());
       let original_value = AXValue::new_strict(&original_size)?;
       let sample = |delta: i32| -> crate::Result<(i32, i32)> {
         let size = CGSize::new(
-          f64::from(if probe_width { (original.0 + delta).max(1) } else { original.0 }),
-          f64::from(if probe_height { (original.1 + delta).max(1) } else { original.1 }),
+          f64::from(if probe_width {
+            (original.0 + delta).max(1)
+          } else {
+            original.0
+          }),
+          f64::from(if probe_height {
+            (original.1 + delta).max(1)
+          } else {
+            original.1
+          }),
         );
         el.set_attribute("AXSize", &AXValue::new_strict(&size)?)?;
-        // This only runs for a refused tile dimension, not on every resize.
-        // The owning app must commit its size before we sample it.
+        // This only runs for a refused tile dimension, not on every
+        // resize. The owning app must commit its size before we sample it.
         std::thread::sleep(std::time::Duration::from_millis(100));
         let committed = self.committed_size()?;
-        let ax_size = el.get_attribute::<AXValue>("AXSize")?
+        let ax_size = el
+          .get_attribute::<AXValue>("AXSize")?
           .value_strict::<CGSize>()?;
-        if (ax_size.width - f64::from(committed.0)).abs() > 0.5
-          || (ax_size.height - f64::from(committed.1)).abs() > 0.5
-        {
-          return Err(crate::Error::Platform(
-            "Window resize has not settled; skipping fixed-size detection.".to_string(),
-          ));
-        }
+        ensure_size_settled((ax_size.width, ax_size.height), committed)?;
         Ok(committed)
       };
       let probes = (|| {
         let larger = sample(100)?;
         let smaller = sample(-100)?;
         Ok::<_, crate::Error>(FixedWindowSize::from_probes(
-          original, larger, smaller, probe_width, probe_height,
+          original,
+          larger,
+          smaller,
+          probe_width,
+          probe_height,
         ))
       })();
       // Restore even if either probe failed. Restoration failures must not
       // be hidden, and an inconclusive probe must not freeze a dimension.
       el.set_attribute("AXSize", &original_value)?;
+      let point =
+        CGPoint::new(original_frame.x().into(), original_frame.y().into());
+      el.set_attribute("AXPosition", &AXValue::new_strict(&point)?)?;
+      self.remember_frame(requested, &self.committed_frame()?);
       let detected = probes?;
       Ok(FixedWindowSize {
         width: known.width.or(detected.width),
@@ -899,6 +1092,194 @@ pub(crate) fn reset_focus(dispatcher: &Dispatcher) -> crate::Result<()> {
 #[cfg(test)]
 mod frame_tests {
   use super::*;
+
+  #[test]
+  fn non_resizable_utility_windows_are_not_given_flexible_tiles() {
+    // Both Mac Mouse Fix and NetBird report success with AXSize read-only.
+    assert!(!resolve_resizability(AXError::Success, false).unwrap());
+    assert!(resolve_resizability(AXError::Success, true).unwrap());
+  }
+
+  #[test]
+  fn failed_capability_query_does_not_classify_a_window_as_fixed() {
+    assert!(resolve_resizability(AXError::CannotComplete, false).is_err());
+    assert!(
+      resolve_resizability(AXError::AttributeUnsupported, false).unwrap()
+    );
+  }
+
+  #[test]
+  fn unsettled_size_probe_can_retry_after_the_app_commits() {
+    // AX reports the tile request while WindowServer still has the old
+    // native minimum. Returning success here would cache that request.
+    assert!(ensure_size_settled((323.0, 1067.0), (700, 1067)).is_err());
+    assert!(ensure_size_settled((700.0, 1067.0), (700, 1067)).is_ok());
+  }
+
+  #[test]
+  fn rejected_size_write_still_moves_window_to_its_assigned_monitor() {
+    use std::cell::RefCell;
+    let bounds = Rect::from_xy(1728, -120, 2560, 1390);
+    let native = RefCell::new(Rect::from_xy(100, 45, 700, 600));
+    let requested = Rect::from_xy(4000, 45, 288, 600);
+    let actual = place_visible_frame(
+      &requested,
+      &bounds,
+      || Err(crate::Error::Platform("App refused AXSize".into())),
+      || Ok(native.borrow().clone()),
+      |frame| {
+        let accepted = native.borrow().clone();
+        *native.borrow_mut() = Rect::from_xy(
+          frame.x(),
+          frame.y(),
+          accepted.width(),
+          accepted.height(),
+        );
+        Ok(())
+      },
+    )
+    .unwrap();
+    assert_eq!(actual, Rect::from_xy(3588, 45, 700, 600));
+    assert!(bounds.contains_rect(&actual));
+  }
+
+  #[test]
+  fn floating_position_inside_the_monitor_is_preserved() {
+    let bounds = Rect::from_xy(5, 45, 1718, 1067);
+    let floating = Rect::from_xy(508, 45, 938, 1067);
+    let actual = contain_native_frame(
+      &bounds,
+      None,
+      || Ok(floating.clone()),
+      |_| {
+        panic!("An in-bounds floating placement must not be re-anchored")
+      },
+    )
+    .unwrap();
+    assert_eq!(actual, floating);
+  }
+
+  #[test]
+  fn slack_position_drift_does_not_leave_a_strip_on_the_right() {
+    use std::cell::{Cell, RefCell};
+    let bounds = Rect::from_xy(5, 45, 1718, 1067);
+    let requested = Rect::from_xy(785, 45, 938, 1067);
+    let native = RefCell::new(Rect::from_xy(508, 45, 938, 1067));
+    let moves = Cell::new(0);
+    for _ in 0..3 {
+      place_visible_frame(
+        &requested,
+        &bounds,
+        || Ok(()),
+        || Ok(native.borrow().clone()),
+        |frame| {
+          moves.set(moves.get() + 1);
+          *native.borrow_mut() = frame.clone();
+          Ok(())
+        },
+      )
+      .unwrap();
+    }
+    assert_eq!(*native.borrow(), requested);
+    assert_eq!(moves.get(), 1);
+  }
+
+  #[test]
+  fn restoring_tile_origin_preserves_native_minimum_and_monitor_bounds() {
+    use std::cell::RefCell;
+    for (bounds, requested, actual, expected) in [
+      (
+        Rect::from_xy(5, 45, 1718, 1067),
+        Rect::from_xy(1400, 45, 323, 1067),
+        Rect::from_xy(508, 45, 700, 1067),
+        Rect::from_xy(1023, 45, 700, 1067),
+      ),
+      (
+        Rect::from_xy(-2560, -200, 2560, 1440),
+        Rect::from_xy(-700, 800, 700, 440),
+        Rect::from_xy(-1800, -100, 700, 600),
+        Rect::from_xy(-700, 640, 700, 600),
+      ),
+    ] {
+      let native = RefCell::new(actual);
+      let frame = place_visible_frame(
+        &requested,
+        &bounds,
+        || Ok(()),
+        || Ok(native.borrow().clone()),
+        |frame| {
+          *native.borrow_mut() = frame.clone();
+          Ok(())
+        },
+      )
+      .unwrap();
+      assert_eq!(frame, expected);
+      assert!(bounds.contains_rect(&frame));
+    }
+  }
+
+  #[test]
+  fn refused_resize_is_contained_using_committed_size() {
+    use std::cell::RefCell;
+    let bounds = Rect::from_xy(5, 45, 1718, 1067);
+    let requested = Rect::from_xy(1400, 45, 323, 1067);
+    let native = RefCell::new(Rect::from_xy(5, 45, 700, 1067));
+    apply_frame(None, &requested, false, |attribute| {
+      if attribute == FrameAttribute::Position {
+        *native.borrow_mut() =
+          Rect::from_xy(requested.x(), requested.y(), 700, 1067);
+      }
+      // Model an app refusing AXSize while accepting AXPosition.
+      Ok(())
+    })
+    .unwrap();
+    let actual = contain_native_frame(
+      &bounds,
+      None,
+      || Ok(native.borrow().clone()),
+      |frame| {
+        *native.borrow_mut() = frame.clone();
+        Ok(())
+      },
+    )
+    .unwrap();
+    assert_eq!(actual, Rect::from_xy(1023, 45, 700, 1067));
+    assert!(bounds.contains_rect(&actual));
+  }
+
+  #[test]
+  fn delayed_app_growth_is_contained_without_repeated_resizes() {
+    use std::cell::{Cell, RefCell};
+    let bounds = Rect::from_xy(1728, -120, 2560, 1390);
+    let native = RefCell::new(Rect::from_xy(4000, 900, 700, 600));
+    let moves = Cell::new(0);
+    for _ in 0..3 {
+      contain_native_frame(
+        &bounds,
+        None,
+        || Ok(native.borrow().clone()),
+        |frame| {
+          moves.set(moves.get() + 1);
+          *native.borrow_mut() = frame.clone();
+          Ok(())
+        },
+      )
+      .unwrap();
+    }
+    assert_eq!(moves.get(), 1);
+    assert_eq!(*native.borrow(), Rect::from_xy(3588, 670, 700, 600));
+  }
+
+  #[test]
+  fn failed_containment_write_is_reported() {
+    let result = contain_native_frame(
+      &Rect::from_xy(0, 0, 1000, 800),
+      None,
+      || Ok(Rect::from_xy(900, 0, 700, 600)),
+      |_| Err(crate::Error::Platform("Injected position failure".into())),
+    );
+    assert!(result.is_err());
+  }
 
   #[test]
   fn commands_write_only_the_attributes_they_need() {
