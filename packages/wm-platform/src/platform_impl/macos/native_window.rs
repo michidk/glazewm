@@ -1179,6 +1179,52 @@ mod frame_tests {
   }
 
   #[test]
+  fn slack_huddle_and_main_window_recover_without_a_desktop_strip() {
+    use std::cell::RefCell;
+    let bounds = Rect::from_xy(0, 32, 1728, 1085);
+    let mut frames = Vec::new();
+    for (requested, observed, accepted_size) in [
+      (
+        Rect::from_xy(785, 45, 668, 1067),
+        Rect::from_xy(437, 45, 668, 1067),
+        (668, 1067),
+      ),
+      (
+        Rect::from_xy(1463, 45, 260, 1067),
+        Rect::from_xy(1273, 45, 455, 335),
+        (455, 1067),
+      ),
+    ] {
+      let native = RefCell::new(observed);
+      let actual = reconcile_native_tiling_frame(
+        &requested,
+        &bounds,
+        1,
+        &mut None,
+        || Ok(native.borrow().clone()),
+        || {
+          *native.borrow_mut() = Rect::from_xy(
+            requested.x(),
+            requested.y(),
+            accepted_size.0,
+            accepted_size.1,
+          );
+          Ok(())
+        },
+        |frame| {
+          *native.borrow_mut() = frame.clone();
+          Ok(())
+        },
+      )
+      .unwrap();
+      assert!(bounds.contains_rect(&actual));
+      frames.push(actual);
+    }
+    assert_eq!(frames[0], Rect::from_xy(785, 45, 668, 1067));
+    assert_eq!(frames[1], Rect::from_xy(1273, 45, 455, 1067));
+  }
+
+  #[test]
   fn refused_tile_recovery_is_bounded_and_stays_on_its_monitor() {
     use std::cell::{Cell, RefCell};
     let requested = Rect::from_xy(1400, 45, 323, 1067);
