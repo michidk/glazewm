@@ -52,6 +52,18 @@ pub fn macos_update_border_position(window_id: WindowId, frame: &Rect) {
   }
 }
 
+/// Makes a window's border follow mouse drag events while it is dragged.
+///
+/// Drag events arrive faster than queued accessibility events, so the
+/// border keeps pace with the window.
+#[cfg(target_os = "macos")]
+pub fn macos_set_drag_border_window(
+  window_id: WindowId,
+  is_dragging: bool,
+) {
+  platform_impl::set_drag_border_window(window_id, is_dragging);
+}
+
 /// Removes the border overlay for a managed window.
 #[cfg(target_os = "macos")]
 pub fn macos_remove_border(window_id: WindowId) {

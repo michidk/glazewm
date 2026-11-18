@@ -269,6 +269,11 @@ macro_rules! impl_window_getters {
       }
 
       fn set_active_drag(&self, active_drag: Option<ActiveDrag>) {
+        #[cfg(target_os = "macos")]
+        wm_platform::macos_set_drag_border_window(
+          self.native().id(),
+          active_drag.is_some(),
+        );
         self.0.borrow_mut().active_drag = active_drag;
       }
 

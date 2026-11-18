@@ -684,26 +684,7 @@ impl NativeWindow {
 
   /// Reads committed geometry; AX attributes can echo a rejected request.
   pub(crate) fn committed_frame(&self) -> crate::Result<Rect> {
-    let mut bounds = CGRect::default();
-    let result = unsafe {
-      ffi::SLSGetWindowBounds(
-        ffi::SLSMainConnectionID(),
-        self.id.0,
-        &raw mut bounds,
-      )
-    };
-    if result != CGError::Success {
-      return Err(crate::Error::Platform(
-        "Failed to read committed window bounds.".to_string(),
-      ));
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(Rect::from_xy(
-      bounds.origin.x.round() as i32,
-      bounds.origin.y.round() as i32,
-      bounds.size.width.round() as i32,
-      bounds.size.height.round() as i32,
-    ))
+    committed_window_bounds(self.id)
   }
 
   /// Reads committed size for fixed-dimension detection.
@@ -1153,6 +1134,35 @@ pub(crate) fn reset_focus(dispatcher: &Dispatcher) -> crate::Result<()> {
   }
 
   Ok(())
+}
+
+/// Reads a window's committed `WindowServer` bounds.
+///
+/// AX attributes can echo a rejected request; these bounds cannot.
+pub(crate) fn committed_window_bounds(
+  window_id: WindowId,
+) -> crate::Result<Rect> {
+  let mut bounds = CGRect::default();
+  // SAFETY: `bounds` is a valid out-pointer for the duration of the call.
+  let result = unsafe {
+    ffi::SLSGetWindowBounds(
+      ffi::SLSMainConnectionID(),
+      window_id.0,
+      &raw mut bounds,
+    )
+  };
+  if result != CGError::Success {
+    return Err(crate::Error::Platform(
+      "Failed to read committed window bounds.".to_string(),
+    ));
+  }
+  #[allow(clippy::cast_possible_truncation)]
+  Ok(Rect::from_xy(
+    bounds.origin.x.round() as i32,
+    bounds.origin.y.round() as i32,
+    bounds.size.width.round() as i32,
+    bounds.size.height.round() as i32,
+  ))
 }
 
 #[cfg(test)]

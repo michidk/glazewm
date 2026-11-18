@@ -1,7 +1,10 @@
 use std::{
   collections::HashMap,
   ffi::c_void,
-  sync::{LazyLock, Mutex},
+  sync::{
+    atomic::{AtomicU32, Ordering},
+    LazyLock, Mutex, TryLockError,
+  },
 };
 
 use foreign_types::ForeignType;
@@ -67,6 +70,51 @@ pub(crate) fn update_border_position(
       )
     })?
     .update_position(window_id, frame)
+}
+
+/// Raw ID of the window whose border follows drag events; 0 when none.
+static DRAG_BORDER_WINDOW: AtomicU32 = AtomicU32::new(0);
+
+/// Sets or clears the window whose border follows mouse drag events.
+///
+/// Clearing only applies when `window_id` is still the tracked window, so
+/// a stale clear cannot stop a newer drag.
+pub(crate) fn set_drag_border_window(
+  window_id: WindowId,
+  is_dragging: bool,
+) {
+  if is_dragging {
+    DRAG_BORDER_WINDOW.store(window_id.0, Ordering::SeqCst);
+  } else {
+    let _ = DRAG_BORDER_WINDOW.compare_exchange(
+      window_id.0,
+      0,
+      Ordering::SeqCst,
+      Ordering::SeqCst,
+    );
+  }
+}
+
+/// Moves the dragged window's border to its committed bounds.
+///
+/// Runs on the mouse event tap, so it skips the update rather than wait
+/// when another thread holds the overlay lock.
+pub(crate) fn follow_drag_border() {
+  let id = DRAG_BORDER_WINDOW.load(Ordering::SeqCst);
+  if id == 0 {
+    return;
+  }
+  let window_id = WindowId(id);
+  let Ok(frame) = super::committed_window_bounds(window_id) else {
+    return;
+  };
+  let mut manager = match BORDER_OVERLAY_MANAGER.try_lock() {
+    Ok(manager) => manager,
+    Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => return,
+  };
+  if let Err(error) = manager.update_position(window_id, &frame) {
+    tracing::debug!("Failed to follow drag with border: {error}");
+  }
 }
 
 /// Removes an overlay even when another border update is in flight.
@@ -486,6 +534,16 @@ fn ensure_sls_success(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn stale_drag_clear_keeps_newer_drag_window() {
+    set_drag_border_window(WindowId(7), true);
+    set_drag_border_window(WindowId(9), true);
+    set_drag_border_window(WindowId(7), false);
+    assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 9);
+    set_drag_border_window(WindowId(9), false);
+    assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 0);
+  }
 
   #[derive(Default)]
   struct RecordingBackend {
