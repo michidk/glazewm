@@ -2,7 +2,7 @@ use std::{
   collections::HashMap,
   ffi::c_void,
   sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU64, Ordering},
     LazyLock, Mutex, TryLockError,
   },
 };
@@ -72,26 +72,37 @@ pub(crate) fn update_border_position(
     .update_position(window_id, frame)
 }
 
-/// Raw ID of the window whose border follows drag events; 0 when none.
-static DRAG_BORDER_WINDOW: AtomicU32 = AtomicU32::new(0);
+/// Dragged window as `overlay_id << 32 | bounds_id`; 0 when none.
+///
+/// Packed into one atomic so the event tap never reads a torn pair.
+static DRAG_BORDER_WINDOW: AtomicU64 = AtomicU64::new(0);
 
 /// Sets or clears the window whose border follows mouse drag events.
 ///
-/// Clearing only applies when `window_id` is still the tracked window, so
-/// a stale clear cannot stop a newer drag.
+/// `overlay_id` keys the border; `bounds_id` is the window ID to read
+/// geometry from. Clearing only applies when `overlay_id` is still the
+/// tracked window, so a stale clear cannot stop a newer drag.
 pub(crate) fn set_drag_border_window(
-  window_id: WindowId,
+  overlay_id: WindowId,
+  bounds_id: WindowId,
   is_dragging: bool,
 ) {
   if is_dragging {
-    DRAG_BORDER_WINDOW.store(window_id.0, Ordering::SeqCst);
-  } else {
-    let _ = DRAG_BORDER_WINDOW.compare_exchange(
-      window_id.0,
-      0,
-      Ordering::SeqCst,
+    DRAG_BORDER_WINDOW.store(
+      (u64::from(overlay_id.0) << 32) | u64::from(bounds_id.0),
       Ordering::SeqCst,
     );
+  } else {
+    // A failed exchange means a newer drag replaced it, which must stay.
+    let packed = DRAG_BORDER_WINDOW.load(Ordering::SeqCst);
+    if packed >> 32 == u64::from(overlay_id.0) {
+      let _ = DRAG_BORDER_WINDOW.compare_exchange(
+        packed,
+        0,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
+    }
   }
 }
 
@@ -100,12 +111,14 @@ pub(crate) fn set_drag_border_window(
 /// Runs on the mouse event tap, so it skips the update rather than wait
 /// when another thread holds the overlay lock.
 pub(crate) fn follow_drag_border() {
-  let id = DRAG_BORDER_WINDOW.load(Ordering::SeqCst);
-  if id == 0 {
+  let packed = DRAG_BORDER_WINDOW.load(Ordering::SeqCst);
+  if packed == 0 {
     return;
   }
-  let window_id = WindowId(id);
-  let Ok(frame) = super::committed_window_bounds(window_id) else {
+  #[allow(clippy::cast_possible_truncation)]
+  let (window_id, bounds_id) =
+    (WindowId((packed >> 32) as u32), WindowId(packed as u32));
+  let Ok(frame) = super::committed_window_bounds(bounds_id) else {
     return;
   };
   let mut manager = match BORDER_OVERLAY_MANAGER.try_lock() {
@@ -537,11 +550,11 @@ mod tests {
 
   #[test]
   fn stale_drag_clear_keeps_newer_drag_window() {
-    set_drag_border_window(WindowId(7), true);
-    set_drag_border_window(WindowId(9), true);
-    set_drag_border_window(WindowId(7), false);
-    assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 9);
-    set_drag_border_window(WindowId(9), false);
+    set_drag_border_window(WindowId(7), WindowId(7), true);
+    set_drag_border_window(WindowId(9), WindowId(11), true);
+    set_drag_border_window(WindowId(7), WindowId(7), false);
+    assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 0x9_0000_000b);
+    set_drag_border_window(WindowId(9), WindowId(9), false);
     assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 0);
   }
 
