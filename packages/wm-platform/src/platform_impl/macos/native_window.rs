@@ -410,7 +410,10 @@ impl NativeWindow {
     if self.is_minimized()? {
       return Ok(true);
     }
-    core_graphics_window_is_onscreen(self.id)
+    // Native tab switches can change the window ID.
+    core_graphics_window_is_onscreen(
+      self.current_window_id().unwrap_or(self.id),
+    )
   }
 
   /// Implements [`NativeWindow::is_minimized`].
