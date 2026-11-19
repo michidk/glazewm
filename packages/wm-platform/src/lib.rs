@@ -52,6 +52,26 @@ pub fn macos_update_border_position(window_id: WindowId, frame: &Rect) {
   }
 }
 
+/// Makes a window's border follow mouse drag events while it is dragged.
+///
+/// Drag events arrive faster than queued accessibility events, so the
+/// border keeps pace with the window.
+///
+/// Bounds are read from the current native tab's window ID, since a tab
+/// switch can change it while the border stays keyed by `id()`.
+#[cfg(target_os = "macos")]
+pub fn macos_set_drag_border_window(
+  window: &NativeWindow,
+  is_dragging: bool,
+) {
+  let bounds_id = window.inner.current_window_id().unwrap_or(window.id());
+  platform_impl::set_drag_border_window(
+    window.id(),
+    bounds_id,
+    is_dragging,
+  );
+}
+
 /// Removes the border overlay for a managed window.
 #[cfg(target_os = "macos")]
 pub fn macos_remove_border(window_id: WindowId) {

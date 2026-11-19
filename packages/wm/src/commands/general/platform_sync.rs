@@ -2,8 +2,8 @@ use anyhow::Context;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use wm_common::WindowEffectConfig;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
-  WindowState, WmEvent,
+  ActiveDragOperation, CursorJumpTrigger, DisplayState, HideCorner,
+  HideMethod, UniqueExt, WindowState, WmEvent,
 };
 #[cfg(target_os = "macos")]
 use wm_platform::NativeWindowExtMacOs;
@@ -190,6 +190,12 @@ fn redraw_containers(
   let windows_to_redraw = state
     .windows()
     .into_iter()
+    // Setting the frame of a window under a live resize fights the user.
+    .filter(|window| {
+      !window.active_drag().is_some_and(|drag| {
+        drag.operation == Some(ActiveDragOperation::Resize)
+      })
+    })
     .filter(|window| {
       windows_to_redraw.contains(window)
         || (window.state() == WindowState::Tiling
@@ -514,20 +520,27 @@ fn reposition_window(
         // window, the first `set_frame` often fails or mis-sizes during
         // cross-DPI transitions. Re-apply after a short delay to allow
         // macOS to commit the screen association change.
-        let frame_result = if window.has_pending_dpi_adjustment() {
-          if let Err(error) =
-            window.native().set_frame_with_dpi_retry(&rect)
-          {
-            tracing::debug!(
-              "Initial cross-DPI frame failed; retry queued: {error}"
-            );
-          }
-          Ok(())
+        let monitor_bounds = window
+          .monitor()
+          .context("No monitor.")?
+          .native_properties()
+          .working_area;
+        // Hidden corner placement is handled above. Only visible frames
+        // are contained; otherwise hiding would expose the window again.
+        let frame_result = if is_visible {
+          window.native().set_frame_within(
+            &rect,
+            &monitor_bounds,
+            window.has_pending_dpi_adjustment(),
+          )
         } else {
           window.native().set_frame(&rect)
         };
 
-        if is_visible && window.state() == WindowState::Tiling {
+        if is_visible
+          && window.state() == WindowState::Tiling
+          && !window.has_pending_dpi_adjustment()
+        {
           let properties = window.native_properties();
           let requested_size = (rect.width(), rect.height());
           if properties.fixed_size_probe != Some(requested_size) {
@@ -554,7 +567,20 @@ fn reposition_window(
         }
         frame_result?;
         // Detection may have restored the native size after probing.
-        let fitted_rect = window.native().frame()?;
+        let fitted_rect =
+          if is_visible && window.state() == WindowState::Tiling {
+            window
+              .native()
+              .reconcile_tiling_frame(&rect, &monitor_bounds)?
+          } else if is_visible {
+            window.native().constrain_to_bounds(&monitor_bounds)?
+          } else {
+            window.native().committed_frame()?
+          };
+        if is_visible && matches!(window.state(), WindowState::Floating(_))
+        {
+          window.set_floating_placement(fitted_rect.clone());
+        }
         macos_update_border_position(window.native().id(), &fitted_rect);
       }
     }

@@ -32,15 +32,24 @@ struct CallbackData {
 
   /// Timestamp of the last emitted `Move` event for throttling.
   last_move_emission: Option<Instant>,
+
+  /// Whether `Move` events are forwarded. Drag events are always tapped
+  /// to keep the dragged window's border in step.
+  emit_moves: bool,
 }
 
 impl CallbackData {
-  fn new(event_tx: mpsc::UnboundedSender<MouseEvent>) -> Self {
+  /// Creates callback state for the given enabled event kinds.
+  fn new(
+    event_tx: mpsc::UnboundedSender<MouseEvent>,
+    enabled_events: &[MouseEventKind],
+  ) -> Self {
     Self {
       event_tx,
       event_tap: EventTapHandle::default(),
       pressed_buttons: PressedButtons::default(),
       last_move_emission: None,
+      emit_moves: enabled_events.contains(&MouseEventKind::Move),
     }
   }
 }
@@ -66,7 +75,8 @@ impl MouseListener {
     dispatcher: &Dispatcher,
   ) -> crate::Result<Self> {
     let callback_data_ptr = {
-      let data = Box::new(CallbackData::new(event_tx.clone()));
+      let data =
+        Box::new(CallbackData::new(event_tx.clone(), enabled_events));
       Box::into_raw(data) as usize
     };
 
@@ -110,7 +120,8 @@ impl MouseListener {
     let _ = self.terminate();
 
     let callback_data_ptr = {
-      let data = Box::new(CallbackData::new(self.event_tx.clone()));
+      let data =
+        Box::new(CallbackData::new(self.event_tx.clone(), enabled_events));
       Box::into_raw(data) as usize
     };
 
@@ -225,6 +236,9 @@ impl MouseListener {
         }
         MouseEventKind::LeftButtonUp => {
           mask |= 1u64 << u64::from(CGEventType::LeftMouseUp.0);
+          // Drag events let the dragged window's border follow the cursor
+          // without waiting for queued accessibility events.
+          mask |= 1u64 << u64::from(CGEventType::LeftMouseDragged.0);
         }
         MouseEventKind::RightButtonUp => {
           mask |= 1u64 << u64::from(CGEventType::RightMouseUp.0);
@@ -251,6 +265,10 @@ impl MouseListener {
 
     if data.event_tap.reenable_if_disabled(cg_event_type) {
       return unsafe { cg_event.as_mut() };
+    }
+
+    if cg_event_type == CGEventType::LeftMouseDragged {
+      super::follow_drag_border();
     }
 
     // Map a `CGEventType` to a `MouseEventKind`.
@@ -297,6 +315,7 @@ impl MouseListener {
     // each emission. State change events (button down/up) always get
     // emitted.
     let should_emit = match event_kind {
+      MouseEventKind::Move if !data.emit_moves => false,
       MouseEventKind::Move => {
         let has_elapsed_throttle =
           data.last_move_emission.is_none_or(|timestamp| {

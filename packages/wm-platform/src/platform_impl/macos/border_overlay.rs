@@ -1,7 +1,10 @@
 use std::{
   collections::HashMap,
   ffi::c_void,
-  sync::{LazyLock, Mutex},
+  sync::{
+    atomic::{AtomicU64, Ordering},
+    LazyLock, Mutex, TryLockError,
+  },
 };
 
 use foreign_types::ForeignType;
@@ -67,6 +70,64 @@ pub(crate) fn update_border_position(
       )
     })?
     .update_position(window_id, frame)
+}
+
+/// Dragged window as `overlay_id << 32 | bounds_id`; 0 when none.
+///
+/// Packed into one atomic so the event tap never reads a torn pair.
+static DRAG_BORDER_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+/// Sets or clears the window whose border follows mouse drag events.
+///
+/// `overlay_id` keys the border; `bounds_id` is the window ID to read
+/// geometry from. Clearing only applies when `overlay_id` is still the
+/// tracked window, so a stale clear cannot stop a newer drag.
+pub(crate) fn set_drag_border_window(
+  overlay_id: WindowId,
+  bounds_id: WindowId,
+  is_dragging: bool,
+) {
+  if is_dragging {
+    DRAG_BORDER_WINDOW.store(
+      (u64::from(overlay_id.0) << 32) | u64::from(bounds_id.0),
+      Ordering::SeqCst,
+    );
+  } else {
+    // A failed exchange means a newer drag replaced it, which must stay.
+    let packed = DRAG_BORDER_WINDOW.load(Ordering::SeqCst);
+    if packed >> 32 == u64::from(overlay_id.0) {
+      let _ = DRAG_BORDER_WINDOW.compare_exchange(
+        packed,
+        0,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      );
+    }
+  }
+}
+
+/// Moves the dragged window's border to its committed bounds.
+///
+/// Runs on the mouse event tap, so it skips the update rather than wait
+/// when another thread holds the overlay lock.
+pub(crate) fn follow_drag_border() {
+  let packed = DRAG_BORDER_WINDOW.load(Ordering::SeqCst);
+  if packed == 0 {
+    return;
+  }
+  #[allow(clippy::cast_possible_truncation)]
+  let (window_id, bounds_id) =
+    (WindowId((packed >> 32) as u32), WindowId(packed as u32));
+  let Ok(frame) = super::committed_window_bounds(bounds_id) else {
+    return;
+  };
+  let mut manager = match BORDER_OVERLAY_MANAGER.try_lock() {
+    Ok(manager) => manager,
+    Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => return,
+  };
+  if let Err(error) = manager.update_position(window_id, &frame) {
+    tracing::debug!("Failed to follow drag with border: {error}");
+  }
 }
 
 /// Removes an overlay even when another border update is in flight.
@@ -486,6 +547,16 @@ fn ensure_sls_success(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn stale_drag_clear_keeps_newer_drag_window() {
+    set_drag_border_window(WindowId(7), WindowId(7), true);
+    set_drag_border_window(WindowId(9), WindowId(11), true);
+    set_drag_border_window(WindowId(7), WindowId(7), false);
+    assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 0x9_0000_000b);
+    set_drag_border_window(WindowId(9), WindowId(9), false);
+    assert_eq!(DRAG_BORDER_WINDOW.load(Ordering::SeqCst), 0);
+  }
 
   #[derive(Default)]
   struct RecordingBackend {

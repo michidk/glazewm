@@ -112,20 +112,37 @@ fn allocate_lengths(
   constraints: &[LengthConstraint],
   horizontal: bool,
 ) -> Vec<i32> {
-  if constraints
+  let minimum_total: i64 = constraints
     .iter()
-    .all(|c| c.minimum == 0 && c.fixed.is_none())
+    .map(|constraint| i64::from(constraint.minimum.max(1)))
+    .sum();
+  if minimum_total > i64::from(available)
+    || constraints
+      .iter()
+      .all(|c| c.minimum == 0 && c.fixed.is_none())
   {
-    // Preserve the existing unconstrained layout's rounding behavior.
+    // If native bounds cannot fit, use the default proportional layout.
+    // Apps may overlap their tiles, but must not push sibling tiles away.
+    let total_weight: f32 = weights.iter().sum();
+    let mut weight_sum = 0.0;
+    let mut assigned = 0;
     return weights
       .iter()
       .map(|weight| {
-        let length = available as f32 * weight;
-        if horizontal {
-          length.round() as i32
+        weight_sum += weight;
+        let end = if total_weight > 0.0 {
+          let length = available.max(0) as f32 * weight_sum / total_weight;
+          if horizontal {
+            length.round() as i32
+          } else {
+            length as i32
+          }
         } else {
-          length as i32
-        }
+          0
+        };
+        let length = end - assigned;
+        assigned = end;
+        length
       })
       .collect();
   }
@@ -200,17 +217,22 @@ pub fn fitted_tiling_rect(
     .position(|child| child.id() == container.id())
     .context("Tile is missing from its parent.")?;
   let (horizontal_gap, vertical_gap) = container.inner_gaps()?;
+  let axis_length = if horizontal {
+    parent_rect.width()
+  } else {
+    parent_rect.height()
+  }
+  .max(0);
+  #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+  let gap_count = children.len().saturating_sub(1) as i32;
   let gap = if horizontal {
     horizontal_gap
   } else {
     vertical_gap
-  };
-  #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-  let available = if horizontal {
-    parent_rect.width()
-  } else {
-    parent_rect.height()
-  } - gap * (children.len() - 1) as i32;
+  }
+  .max(0)
+  .min(axis_length / gap_count.max(1));
+  let available = axis_length - gap * gap_count;
   let constraints = children
     .iter()
     .map(|child| length_constraint(child, horizontal))
@@ -222,14 +244,15 @@ pub fn fitted_tiling_rect(
   let lengths =
     allocate_lengths(available, &weights, &constraints, horizontal);
   let cross_constraint = length_constraint(container, !horizontal)?;
-  let cross_length = cross_constraint.fixed.unwrap_or_else(|| {
-    let available = if horizontal {
-      parent_rect.height()
-    } else {
-      parent_rect.width()
-    };
-    available.max(cross_constraint.minimum)
-  });
+  let cross_available = if horizontal {
+    parent_rect.height()
+  } else {
+    parent_rect.width()
+  };
+  let cross_length = cross_constraint
+    .fixed
+    .unwrap_or(cross_available)
+    .min(cross_available);
   Ok(tile_rect(
     &parent_rect,
     &lengths,
@@ -276,6 +299,133 @@ mod tests {
       fixed: Some(length),
       minimum: length,
     }
+  }
+
+  #[test]
+  fn crowded_proportional_layout_does_not_accumulate_rounding_overflow() {
+    for horizontal in [true, false] {
+      for count in [3_u16, 7, 15, 51] {
+        let weight = 1.0 / f32::from(count);
+        let count = usize::from(count);
+        let weights = vec![weight; count];
+        let constraints = vec![fixed(700); count];
+        let lengths =
+          allocate_lengths(1001, &weights, &constraints, horizontal);
+        assert_eq!(lengths.iter().sum::<i32>(), 1001);
+        assert!(lengths.iter().all(|length| *length >= 0));
+      }
+    }
+  }
+
+  #[test]
+  fn overflowing_minimums_use_default_horizontal_tiles() {
+    let constraints =
+      [770, 694, 360, 200, 500].map(|minimum| LengthConstraint {
+        fixed: None,
+        minimum,
+      });
+    let lengths = allocate_lengths(
+      1600,
+      &[0.1, 0.2, 0.2, 0.25, 0.25],
+      &constraints,
+      true,
+    );
+    assert_eq!(lengths, [160, 320, 320, 400, 400]);
+    assert_eq!(
+      tile_rect(
+        &Rect::from_xy(5, 45, 1640, 1067),
+        &lengths,
+        4,
+        10,
+        1067,
+        true
+      ),
+      Rect::from_xy(1245, 45, 400, 1067)
+    );
+  }
+
+  #[test]
+  fn overflowing_minimums_use_default_vertical_tiles() {
+    let constraints =
+      [620, 650, 400, 150, 470].map(|minimum| LengthConstraint {
+        fixed: None,
+        minimum,
+      });
+    let lengths = allocate_lengths(1030, &[0.2; 5], &constraints, false);
+    assert_eq!(lengths, [206; 5]);
+    assert_eq!(
+      tile_rect(
+        &Rect::from_xy(5, 45, 1718, 1070),
+        &lengths,
+        4,
+        10,
+        1718,
+        false
+      ),
+      Rect::from_xy(5, 909, 1718, 206)
+    );
+  }
+
+  #[test]
+  fn oversized_fixed_and_nested_constraints_do_not_expand_tiles() {
+    assert_eq!(
+      allocate_lengths(1000, &[1.0], &[fixed(2000)], true),
+      [1000]
+    );
+    let nested = combine_constraints(&[fixed(600), fixed(600)], true, 10);
+    assert_eq!(
+      allocate_lengths(
+        1000,
+        &[0.5, 0.5],
+        &[nested, LengthConstraint::default()],
+        true
+      ),
+      [500, 500]
+    );
+  }
+  #[test]
+  fn minimums_fit_vertically_but_not_horizontally() {
+    let widths = [860, 694, 500, 380].map(|minimum| LengthConstraint {
+      fixed: None,
+      minimum,
+    });
+    let heights = [LengthConstraint {
+      fixed: None,
+      minimum: 180,
+    }; 4];
+    assert!(combine_constraints(&widths, true, 10).minimum > 1718);
+    assert!(combine_constraints(&widths, false, 10).minimum <= 1718);
+    assert!(combine_constraints(&heights, true, 10).minimum <= 1067);
+    let lengths = allocate_lengths(1037, &[0.25; 4], &heights, false);
+    for index in 0..4 {
+      let rect = tile_rect(
+        &Rect::from_xy(5, 45, 1718, 1067),
+        &lengths,
+        index,
+        10,
+        1718,
+        false,
+      );
+      assert!(rect.top >= 45 && rect.bottom <= 1112);
+      assert!(rect.height() >= 180);
+    }
+  }
+
+  #[test]
+  fn neither_direction_fits_when_both_axes_are_overconstrained() {
+    let widths = [860, 694, 500, 380].map(|minimum| LengthConstraint {
+      fixed: None,
+      minimum,
+    });
+    let heights = [LengthConstraint {
+      fixed: None,
+      minimum: 400,
+    }; 4];
+    assert!(combine_constraints(&widths, true, 10).minimum > 1718);
+    assert!(combine_constraints(&heights, true, 10).minimum > 1067);
+    let nested = combine_constraints(&[fixed(1800)], false, 10);
+    assert!(combine_constraints(&[nested], true, 10).minimum > 1718);
+    assert!(combine_constraints(&[nested], false, 10).minimum > 1718);
   }
 
   #[test]
@@ -434,11 +584,11 @@ mod tests {
     assert_eq!(split.fixed, None);
     assert_eq!(
       allocate_lengths(1001, &[0.5, 0.5], &[split; 2], true),
-      vec![501, 501]
+      vec![501, 500]
     );
     assert_eq!(
       allocate_lengths(1001, &[0.5, 0.5], &[split; 2], false),
-      vec![500, 500]
+      vec![500, 501]
     );
   }
 
@@ -498,7 +648,7 @@ mod tests {
   }
 
   #[test]
-  fn insufficient_space_never_produces_negative_lengths() {
+  fn insufficient_space_preserves_proportional_shares() {
     let constraints = [
       LengthConstraint {
         fixed: Some(740),
@@ -508,7 +658,7 @@ mod tests {
     ];
     assert_eq!(
       allocate_lengths(600, &[0.5, 0.5], &constraints, true),
-      vec![740, 1]
+      vec![300, 300]
     );
   }
 }
