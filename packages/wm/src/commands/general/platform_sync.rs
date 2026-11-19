@@ -2,8 +2,8 @@ use anyhow::Context;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use wm_common::WindowEffectConfig;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
-  WindowState, WmEvent,
+  ActiveDragOperation, CursorJumpTrigger, DisplayState, HideCorner,
+  HideMethod, UniqueExt, WindowState, WmEvent,
 };
 #[cfg(target_os = "macos")]
 use wm_platform::NativeWindowExtMacOs;
@@ -190,6 +190,12 @@ fn redraw_containers(
   let windows_to_redraw = state
     .windows()
     .into_iter()
+    // Setting the frame of a window under a live resize fights the user.
+    .filter(|window| {
+      !window.active_drag().is_some_and(|drag| {
+        drag.operation == Some(ActiveDragOperation::Resize)
+      })
+    })
     .filter(|window| {
       windows_to_redraw.contains(window)
         || (window.state() == WindowState::Tiling
